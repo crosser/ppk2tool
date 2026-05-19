@@ -1,5 +1,6 @@
 """ Example frontend for PPK2 profiler """
 
+from getopt import getopt  # pylint: disable=deprecated-module
 import os
 from selectors import DefaultSelector, EVENT_READ
 from sys import argv, stdin
@@ -28,8 +29,12 @@ def show(cmd: PPK2Cmd, data: PPK2Data) -> None:
     print("callback", cmd, "got", data)
 
 if __name__ == "__main__":
-    if len(argv) == 2:
-        devpath = argv[1]
+    topts, args = getopt(argv[1:], "dv:")
+    opts = dict(topts)
+    debug = "-d" in opts
+    voltage = float(opts.get("-v", 3.7))
+    if len(args) == 1:
+        devpath = args[0]
     else:
         found = 0
         devname = None
@@ -41,7 +46,7 @@ if __name__ == "__main__":
             print("zero or more than one profiler devices")
             exit(1)
         devpath = os.path.join("/dev/serial/by-id", devname)
-    print("Using PPK on", devpath)
+    print("Using PPK on", devpath, "voltage", voltage, "V")
 
     with open(
         devpath, "rb+", buffering=0,
