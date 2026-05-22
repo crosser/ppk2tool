@@ -1,4 +1,4 @@
-""" Example frontend for PPK2 profiler """
+"""Example frontend for PPK2 profiler"""
 
 from getopt import getopt  # pylint: disable=deprecated-module
 import os
@@ -6,12 +6,14 @@ from selectors import DefaultSelector, EVENT_READ
 from sys import argv, stdin
 from termios import tcsetattr, TCSAFLUSH
 from tty import setcbreak
-from typing import ContextManager, Literal
+from typing import ContextManager, Dict, Literal
 
 from . import PPK2CTX, PPK2Cmd, PPK2Data
 
+
 class rawstdin(ContextManager[None]):
-    """ Run nexted code with stdin in raw mode if it is a tty """
+    """Run nexted code with stdin in raw mode if it is a tty"""
+
     # This really ought to be in Python's standard library...
     def __init__(self) -> None:
         self.old_tcattr = None
@@ -25,14 +27,23 @@ class rawstdin(ContextManager[None]):
             tcsetattr(stdin, TCSAFLUSH, self.old_tcattr)
         return False
 
+
 def show(cmd: PPK2Cmd, data: PPK2Data) -> None:
     print("callback", cmd, "got", data)
 
+def bracket(voltage: float) -> float:
+    if voltage < 0.8:
+        return 0.8
+    if voltage > 5.0:
+        return 5.0
+    return voltage
+
 if __name__ == "__main__":
-    topts, args = getopt(argv[1:], "dv:")
-    opts = dict(topts)
-    debug = "-d" in opts
-    voltage = float(opts.get("-v", 3.7))
+    topts, args = getopt(argv[1:], "dsv:")
+    opts: Dict[str, str] = dict(topts)
+    debug: bool = "-d" in opts
+    passthrough: bool = "-s" in opts
+    voltage: float = bracket(float(opts.get("-v", 3.7)))
     if len(args) == 1:
         devpath = args[0]
     else:
@@ -49,15 +60,23 @@ if __name__ == "__main__":
     print("Using PPK on", devpath, "voltage", voltage, "V")
 
     with open(
-        devpath, "rb+", buffering=0,
-        opener=lambda nm, flg: os.open(nm, flg | os.O_NOCTTY)
+        devpath,
+        "rb+",
+        buffering=0,
+        opener=lambda nm, flg: os.open(nm, flg | os.O_NOCTTY),
     ) as tty, DefaultSelector() as sel, rawstdin():
         setcbreak(tty)
         sel.register(stdin, EVENT_READ)
         sel.register(tty, EVENT_READ)
         ctx = PPK2CTX(tty).setcallback(show)
-        print("Q/q: quit, P/p: Power on/off, M/m: measuring start/stop")
+
+        ctx.cmd(PPK2Cmd.REGULATOR_SET, *divmod(int(voltage * 1000), 256))
+        ctx.cmd(
+            PPK2Cmd.SET_POWER_MODE, 1 if passthrough else 2
+        )
         ctx.cmd(PPK2Cmd.GET_META_DATA)
+
+        print("Q/q: quit, P/p: Power on/off, M/m: measuring start/stop")
         running = True
         while running:
             try:
@@ -72,8 +91,6 @@ if __name__ == "__main__":
                             running = False
                         elif k in ("P", "p"):
                             ctx.cmd(PPK2Cmd.DEVICE_RUNNING_SET, int(k == "P"))
-                        elif k == "v":
-                            ctx.cmd(PPK2Cmd.REGULATOR_SET, 14, 116)
                         else:
                             print("Unknown command", k)
                     elif events == EVENT_READ and key.fileobj == tty:
