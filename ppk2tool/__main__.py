@@ -34,12 +34,14 @@ def show(cmd: PPK2Cmd, data: PPK2Data) -> None:
     else:
         print("callback", cmd, "got", data)
 
+
 def bracket(voltage: float) -> float:
     if voltage < 0.8:
         return 0.8
     if voltage > 5.0:
         return 5.0
     return voltage
+
 
 if __name__ == "__main__":
     topts, args = getopt(argv[1:], "dsv:")
@@ -74,12 +76,13 @@ if __name__ == "__main__":
         ctx = PPK2CTX(tty).setcallback(show)
 
         ctx.cmd(PPK2Cmd.REGULATOR_SET, *divmod(int(voltage * 1000), 256))
-        ctx.cmd(
-            PPK2Cmd.SET_POWER_MODE, 1 if passthrough else 2
-        )
+        ctx.cmd(PPK2Cmd.SET_POWER_MODE, 1 if passthrough else 2)
         ctx.cmd(PPK2Cmd.GET_META_DATA)
 
-        print("Q/q: quit, P/p: Power on/off, M/m: measuring start/stop")
+        print(
+            "P/p: Power on/off, M/m: measuring start/stop, V/v: voltage 100mV up/down"
+            "\nQ or q: quit"
+        )
         running = True
         while running:
             try:
@@ -94,6 +97,15 @@ if __name__ == "__main__":
                             running = False
                         elif k in ("P", "p"):
                             ctx.cmd(PPK2Cmd.DEVICE_RUNNING_SET, int(k == "P"))
+                        elif k in ("V", "v"):
+                            voltage = bracket(
+                                voltage + 0.1 if k == "V" else voltage - 0.1
+                            )
+                            print("Output voltage changed to", voltage)
+                            ctx.cmd(
+                                PPK2Cmd.REGULATOR_SET,
+                                *divmod(int(voltage * 1000), 256),
+                            )
                         else:
                             print("Unknown command", k)
                     elif events == EVENT_READ and key.fileobj == tty:
