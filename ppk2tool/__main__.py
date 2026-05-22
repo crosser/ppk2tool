@@ -8,7 +8,7 @@ from termios import tcsetattr, TCSAFLUSH
 from tty import setcbreak
 from typing import ContextManager, Dict, Literal
 
-from . import PPK2CTX, PPK2Cmd, PPK2Data
+from . import PPK2CTX, PPK2Cmd, PPK2Data, PPK2Meta
 
 
 class rawstdin(ContextManager[None]):
@@ -29,7 +29,10 @@ class rawstdin(ContextManager[None]):
 
 
 def show(cmd: PPK2Cmd, data: PPK2Data) -> None:
-    print("callback", cmd, "got", data)
+    if cmd is PPK2Cmd.GET_META_DATA:
+        print("metadata", PPK2Meta.parse(data))
+    else:
+        print("callback", cmd, "got", data)
 
 def bracket(voltage: float) -> float:
     if voltage < 0.8:

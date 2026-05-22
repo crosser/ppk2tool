@@ -1,11 +1,13 @@
-""" ppk2 API """
+"""ppk2 API"""
 
 from abc import ABC
 from enum import Enum
-from typing import Callable
+from typing import Callable, get_args, get_type_hints, get_origin, NamedTuple
+
 
 class PPK2Cmd(Enum):
-    """ Command bytes """
+    """Command bytes"""
+
     # Shamelessly stolen from https://github.com/IRNAS/ppk2-api-python
     NO_OP = 0x00
     TRIGGER_SET = 0x01
@@ -17,12 +19,12 @@ class PPK2Cmd(Enum):
     AVERAGE_STOP = 0x07
     RANGE_SET = 0x08
     LCD_SET = 0x09
-    TRIGGER_STOP = 0x0a
-    DEVICE_RUNNING_SET = 0x0c
-    REGULATOR_SET = 0x0d
-    SWITCH_POINT_DOWN = 0x0e
-    SWITCH_POINT_UP = 0x0f
-    TRIGGER_EXT_TOGGLE = 0x10
+    TRIGGER_STOP = 0x0A
+    DEVICE_RUNNING_SET = 0x0C
+    REGULATOR_SET = 0x0D
+    SWITCH_POINT_DOWN = 0x0E
+    SWITCH_POINT_UP = 0x0F
+    TRIGGER_EXT_TOGGLE = 0x10  # Not certain, was a typo upstream?
     SET_POWER_MODE = 0x11
     RES_USER_SET = 0x12
     SPIKE_FILTERING_ON = 0x15
@@ -31,12 +33,77 @@ class PPK2Cmd(Enum):
     RESET = 0x20
     SET_USER_GAINS = 0x25
 
+
+class PPK2Meta(NamedTuple):
+    Calibrated: bool
+    R0: float
+    R1: float
+    R2: float
+    R3: float
+    R4: float
+    GS0: float
+    GS1: float
+    GS2: float
+    GS3: float
+    GS4: float
+    GI0: float
+    GI1: float
+    GI2: float
+    GI3: float
+    GI4: float
+    O0: float
+    O1: float
+    O2: float
+    O3: float
+    O4: float
+    VDD: int
+    HW: int
+    mode: int
+    S0: float
+    S1: float
+    S2: float
+    S3: float
+    S4: float
+    I0: float
+    I1: float
+    I2: float
+    I3: float
+    I4: float
+    UG0: float
+    UG1: float
+    UG2: float
+    UG3: float
+    UG4: float
+    IA: int
+
+    @classmethod
+    def parse(cls, data: bytes) -> "PPK2Cmd":
+        datadict = dict(
+            ln.split(": ")
+            for ln in data.decode("utf-8").split("\n")
+            if ln and ln != "END"
+        )
+        kwargs = {
+            attr: acls(datadict.get(attr))
+            for attr, acls in get_type_hints(cls).items()
+        }
+        # print(datadict)
+        # print(kwargs)
+        if (extradata := set(datadict) - set(kwargs)):
+            print("Unknown meta attributes", extradata)
+        if (missingdata := set(kwargs) - set(datadict)):
+            raise RuntimeError("Missing meta attributes {misingdata}")
+        return cls(**kwargs)
+
+
 class PPK2Data(ABC):
-    """ Response / data received from the kit """
+    """Response / data received from the kit"""
+
     pass
 
+
 class PPK2CTX:
-    """ ppk2 context object """
+    """ppk2 context object"""
 
     def __init__(self, tty) -> None:
         self.buffer = b""
@@ -53,13 +120,15 @@ class PPK2CTX:
             self.waitfor = None
         self.tty.write(bytes((*(cmd.value,), *args)))
 
-    def setcallback(self, cb: Callable[[PPK2Data], None]) -> "PPK2CTX":
-        """ Register function to call when something is ready """
+    def setcallback(
+        self, cb: Callable[[PPK2Cmd, PPK2Data], None]
+    ) -> "PPK2CTX":
+        """Register function to call when something is ready"""
         self.cb = cb
         return self
 
     def inject(self, data: bytes) -> None:
-        """ Accept raw data from the kit's serial interface """
+        """Accept raw data from the kit's serial interface"""
         # print("Inject data", data)
         self.buffer += data
         if self.waitfor is not None:
@@ -70,4 +139,3 @@ class PPK2CTX:
         else:
             self.cb(self.lastcmd, self.buffer)
             self.buffer = b""
-
