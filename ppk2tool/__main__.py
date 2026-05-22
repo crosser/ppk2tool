@@ -4,6 +4,7 @@ from getopt import getopt  # pylint: disable=deprecated-module
 import os
 from selectors import DefaultSelector, EVENT_READ
 from sys import argv, stdin
+from struct import unpack
 from termios import tcsetattr, TCSAFLUSH
 from tty import setcbreak
 from typing import ContextManager, Dict, Literal
@@ -28,11 +29,32 @@ class rawstdin(ContextManager[None]):
         return False
 
 
-def show(cmd: PPK2Cmd, data: PPK2Data) -> None:
-    if cmd is PPK2Cmd.GET_META_DATA:
-        print("metadata", PPK2Meta.parse(data))
-    else:
-        print("callback", cmd, "got", data)
+class receiver:
+    count: int
+    remainder: bytes
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.remainder = b""
+
+    def process(self, cmd: PPK2Cmd, data: PPK2Data) -> None:
+        if cmd is PPK2Cmd.GET_META_DATA:
+            print("metadata", PPK2Meta.parse(data))
+        else:  # assume that they are samples
+            if self.count < 100:
+                print("incoming data", data[:8].hex(), len(data))
+            view = memoryview(self.remainder + data)
+            self.remainder = b""
+            for i in range(0, len(view), 4):
+                chunk = view[i:i+4]
+                if len(chunk) < 4:  # last in buffer
+                    self.remainder = bytes(chunk)
+                    if self.count < 100:
+                        print("short read", self.remainder, len(chunk))
+                else:
+                    self.count += 1
+                    if self.count < 100:
+                        print("sample", cmd, "got", hex(unpack("<I", chunk)[0]))
 
 
 def bracket(voltage: float) -> float:
@@ -73,7 +95,8 @@ if __name__ == "__main__":
         setcbreak(tty)
         sel.register(stdin, EVENT_READ)
         sel.register(tty, EVENT_READ)
-        ctx = PPK2CTX(tty).setcallback(show)
+        rctx = receiver()
+        ctx = PPK2CTX(tty).setcallback(rctx.process)
 
         ctx.cmd(PPK2Cmd.REGULATOR_SET, *divmod(int(voltage * 1000), 256))
         ctx.cmd(PPK2Cmd.SET_POWER_MODE, 1 if passthrough else 2)
@@ -105,6 +128,12 @@ if __name__ == "__main__":
                             ctx.cmd(
                                 PPK2Cmd.REGULATOR_SET,
                                 *divmod(int(voltage * 1000), 256),
+                            )
+                        elif k in ("M", "m"):
+                            ctx.cmd(
+                                PPK2Cmd.AVERAGE_START
+                                if k == "M"
+                                else PPK2Cmd.AVERAGE_STOP
                             )
                         else:
                             print("Unknown command", k)
