@@ -30,32 +30,38 @@ class rawstdin(ContextManager[None]):
 
 
 class receiver:
-    count: int
-    remainder: bytes
-
     def __init__(self) -> None:
-        self.count = 0
-        self.remainder = b""
+        self.count: int = 0
+        self.accum: int = 0
+        self.pos: int = 0
 
     def process(self, cmd: PPK2Cmd, data: PPK2Data) -> None:
         if cmd is PPK2Cmd.GET_META_DATA:
             print("metadata", PPK2Meta.parse(data))
         else:  # assume that they are samples
-            if self.count < 100:
+            if self.count < 200:
                 print("incoming data", data[:8].hex(), len(data))
-            view = memoryview(self.remainder + data)
-            self.remainder = b""
-            for i in range(0, len(view), 4):
-                chunk = view[i:i+4]
-                if len(chunk) < 4:  # last in buffer
-                    self.remainder = bytes(chunk)
-                    if self.count < 100:
-                        print("short read", self.remainder, len(chunk))
-                else:
-                    self.count += 1
-                    if self.count < 100:
-                        print("sample", cmd, "got", hex(unpack("<I", chunk)[0]))
+            for i in data:
+                if i == 0xff:
+                    adc = self.accum & 0x007fff
+                    rng = (self.accum & 0x01c000) >> 14
+                    flg = (self.accum & 0x020000) >> 17
+                    ind = (self.accum & 0xfc0000) >> 18
+                    bts = i
 
+                    if self.count < 200:
+                        self.count += 1
+                        print(hex(self.accum), "ind", ind, "flg", flg, "rng", rng, "adc", adc, "bts", bts, "pos", self.pos)
+
+                    self.accum = 0
+                    self.pos = 0
+                else:
+                    self.accum = (self.accum >> 8) | (i << 16)
+                    self.pos += 8
+                    if (self.pos > 24):
+                        raise RuntimeError(
+                            f"no 0xff at {self.pos}, i={i} of {len(data)}"
+                        )
 
 def bracket(voltage: float) -> float:
     if voltage < 0.8:
@@ -97,6 +103,7 @@ if __name__ == "__main__":
         sel.register(tty, EVENT_READ)
         rctx = receiver()
         ctx = PPK2CTX(tty).setcallback(rctx.process)
+        buffer = bytearray(1024)
 
         ctx.cmd(PPK2Cmd.REGULATOR_SET, *divmod(int(voltage * 1000), 256))
         ctx.cmd(PPK2Cmd.SET_POWER_MODE, 1 if passthrough else 2)
@@ -138,13 +145,13 @@ if __name__ == "__main__":
                         else:
                             print("Unknown command", k)
                     elif events == EVENT_READ and key.fileobj == tty:
-                        data = tty.read(1024)
-                        # print("Read", len(data), "bytes")
-                        ctx.inject(data)
+                        length = tty.readinto(buffer)
+                        ctx.inject(buffer[:length])
                     else:
                         raise RuntimeError(
                             f"Events {events} on unknown fileobj {key}"
                         )
             except KeyboardInterrupt:
                 running = False
+        ctx.cmd(PPK2Cmd.RESET)
     print("Exit")
