@@ -1,8 +1,16 @@
 """ppk2 API"""
 
 from abc import ABC
+from array import array
 from enum import Enum
-from typing import Callable, get_args, get_type_hints, get_origin, NamedTuple
+from typing import (
+    Callable,
+    get_args,
+    get_type_hints,
+    get_origin,
+    NamedTuple,
+    Sequence,
+)
 
 
 class PPK2Cmd(Enum):
@@ -36,44 +44,16 @@ class PPK2Cmd(Enum):
 
 class PPK2Meta(NamedTuple):
     Calibrated: bool
-    R0: float
-    R1: float
-    R2: float
-    R3: float
-    R4: float
-    GS0: float
-    GS1: float
-    GS2: float
-    GS3: float
-    GS4: float
-    GI0: float
-    GI1: float
-    GI2: float
-    GI3: float
-    GI4: float
-    O0: float
-    O1: float
-    O2: float
-    O3: float
-    O4: float
+    R: Sequence[float]
+    GS: Sequence[float]
+    GI: Sequence[float]
+    O: Sequence[float]
     VDD: int
     HW: int
     mode: int
-    S0: float
-    S1: float
-    S2: float
-    S3: float
-    S4: float
-    I0: float
-    I1: float
-    I2: float
-    I3: float
-    I4: float
-    UG0: float
-    UG1: float
-    UG2: float
-    UG3: float
-    UG4: float
+    S: Sequence[float]
+    I: Sequence[float]
+    UG: Sequence[float]
     IA: int
 
     @classmethod
@@ -83,15 +63,27 @@ class PPK2Meta(NamedTuple):
             for ln in data.decode("utf-8").split("\n")
             if ln and ln != "END"
         )
+        factors = {
+            # Must instantiate generator in order to execute .pop()-s
+            k: tuple(datadict.pop(k + str(i)) for i in range(5))
+            for k in ("R", "GS", "GI", "O", "S", "I", "UG")
+        }
+        datadict.update(factors)
+        print(datadict)
+
+        def convertor(t) -> Callable[[Any], Any]:
+            if inner := next(iter(get_args(t)), None):
+                return lambda x: array("f", (inner(el) for el in x))
+            return t
+
         kwargs = {
-            attr: acls(datadict.get(attr))
+            attr: convertor(acls)(datadict.get(attr))
             for attr, acls in get_type_hints(cls).items()
         }
-        # print(datadict)
-        # print(kwargs)
-        if (extradata := set(datadict) - set(kwargs)):
+        print(kwargs)
+        if extradata := set(datadict) - set(kwargs):
             print("Unknown meta attributes", extradata)
-        if (missingdata := set(kwargs) - set(datadict)):
+        if missingdata := set(kwargs) - set(datadict):
             raise RuntimeError("Missing meta attributes {misingdata}")
         return cls(**kwargs)
 

@@ -31,37 +31,54 @@ class rawstdin(ContextManager[None]):
 
 class receiver:
     def __init__(self) -> None:
-        self.count: int = 0
+        self.count: int = 200
+        self.metadata: Optional[PPK2Meta] = None
         self.accum: int = 0
         self.pos: int = 0
 
     def process(self, cmd: PPK2Cmd, data: PPK2Data) -> None:
         if cmd is PPK2Cmd.GET_META_DATA:
-            print("metadata", PPK2Meta.parse(data))
+            self.metadata = PPK2Meta.parse(data)
+            print("metadata", self.metadata)
         else:  # assume that they are samples
-            if self.count < 200:
+            if self.count:
                 print("incoming data", data[:8].hex(), len(data))
             for i in data:
-                if i == 0xff:
-                    adc = self.accum & 0x007fff
-                    rng = (self.accum & 0x01c000) >> 14
+                if i == 0xFF:
+                    adc = self.accum & 0x007FFF
+                    rng = (self.accum & 0x01C000) >> 14
                     flg = (self.accum & 0x020000) >> 17
-                    ind = (self.accum & 0xfc0000) >> 18
+                    ind = (self.accum & 0xFC0000) >> 18
                     bts = i
 
-                    if self.count < 200:
-                        self.count += 1
-                        print(hex(self.accum), "ind", ind, "flg", flg, "rng", rng, "adc", adc, "bts", bts, "pos", self.pos)
+                    if self.count:
+                        self.count -= 1
+                        print(
+                            hex(self.accum),
+                            "ind",
+                            ind,
+                            "flg",
+                            flg,
+                            "rng",
+                            rng,
+                            "adc",
+                            adc,
+                            "bts",
+                            bts,
+                            "pos",
+                            self.pos,
+                        )
 
                     self.accum = 0
                     self.pos = 0
                 else:
                     self.accum = (self.accum >> 8) | (i << 16)
                     self.pos += 8
-                    if (self.pos > 24):
+                    if self.pos > 24:
                         raise RuntimeError(
                             f"no 0xff at {self.pos}, i={i} of {len(data)}"
                         )
+
 
 def bracket(voltage: float) -> float:
     if voltage < 0.8:
