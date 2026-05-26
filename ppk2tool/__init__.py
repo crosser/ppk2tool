@@ -3,6 +3,8 @@
 from abc import ABC
 from array import array
 from enum import Enum
+from itertools import groupby
+from more_itertools import partition
 from typing import (
     Callable,
     get_args,
@@ -10,6 +12,7 @@ from typing import (
     get_origin,
     NamedTuple,
     Sequence,
+    Tuple,
 )
 
 
@@ -42,50 +45,64 @@ class PPK2Cmd(Enum):
     SET_USER_GAINS = 0x25
 
 
+class PPK2Cali(NamedTuple):
+    R: float
+    GS: float
+    GI: float
+    O: float
+    S: float
+    I: float
+    UG: float
+
+
 class PPK2Meta(NamedTuple):
     Calibrated: bool
-    R: Sequence[float]
-    GS: Sequence[float]
-    GI: Sequence[float]
-    O: Sequence[float]
     VDD: int
     HW: int
     mode: int
-    S: Sequence[float]
-    I: Sequence[float]
-    UG: Sequence[float]
     IA: int
+    cali: Tuple[PPK2Cali, PPK2Cali, PPK2Cali, PPK2Cali, PPK2Cali]
 
     @classmethod
     def parse(cls, data: bytes) -> "PPK2Cmd":
-        datadict = dict(
-            ln.split(": ")
-            for ln in data.decode("utf-8").split("\n")
-            if ln and ln != "END"
+        at, ft = partition(
+            lambda x: x[0][-1] in "01234",
+            (
+                ln.split(": ")
+                for ln in data.decode("utf-8").split("\n")
+                if ln and ln != "END"
+            ),
         )
-        factors = {
-            # Must instantiate generator in order to execute .pop()-s
-            k: tuple(datadict.pop(k + str(i)) for i in range(5))
-            for k in ("R", "GS", "GI", "O", "S", "I", "UG")
-        }
-        datadict.update(factors)
-        print(datadict)
+        # print(tuple(at), tuple(ft))
+        attrs = {k: v for k, v in at}
+        factors = (
+            {k[:-1]: v for k, v in d}
+            for _, d in groupby(
+                sorted(ft, key=lambda x: x[0][-1]), key=lambda x: x[0][-1]
+            )
+        )
+        # print(tuple(factors))
 
-        def convertor(t) -> Callable[[Any], Any]:
-            if inner := next(iter(get_args(t)), None):
-                return lambda x: array("f", (inner(el) for el in x))
-            return t
-
+        cali = tuple(
+            PPK2Cali(
+                **{
+                    attr: acls(el.get(attr))
+                    for attr, acls in get_type_hints(PPK2Cali).items()
+                }
+            )
+            for el in factors
+        )
         kwargs = {
-            attr: convertor(acls)(datadict.get(attr))
+            attr: acls(attrs.get(attr))
             for attr, acls in get_type_hints(cls).items()
+            if get_origin(acls) is not tuple
         }
-        print(kwargs)
-        if extradata := set(datadict) - set(kwargs):
+        # print(kwargs, cali)
+        if extradata := set(attrs) - set(kwargs):
             print("Unknown meta attributes", extradata)
-        if missingdata := set(kwargs) - set(datadict):
+        if missingdata := set(kwargs) - set(attrs):
             raise RuntimeError("Missing meta attributes {misingdata}")
-        return cls(**kwargs)
+        return cls(**kwargs, cali=cali)
 
 
 class PPK2Data(ABC):
