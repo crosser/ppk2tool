@@ -1,6 +1,7 @@
 """Example frontend for PPK2 profiler"""
 
 from getopt import getopt  # pylint: disable=deprecated-module
+from math import floor, log10
 import os
 from selectors import DefaultSelector, EVENT_READ
 from sys import argv, stdin
@@ -31,18 +32,19 @@ class rawstdin(ContextManager[None]):
 
 class receiver:
     def __init__(self) -> None:
-        self.count: int = 200
+        self.count: int = 0
         self.metadata: Optional[PPK2Meta] = None
         self.accum: int = 0
         self.pos: int = 0
+        self.avg: float = 0.0
 
     def process(self, cmd: PPK2Cmd, data: PPK2Data) -> None:
         if cmd is PPK2Cmd.GET_META_DATA:
             self.metadata = PPK2Meta.parse(data)
             print("metadata", self.metadata)
         else:  # assume that they are samples
-            if self.count:
-                print("incoming data", data[:8].hex(), len(data))
+            # if self.count < 200:
+            #     print("incoming data", data[:8].hex(), len(data))
             for i in data:
                 if i == 0xFF:
                     adc = self.accum & 0x007FFF
@@ -51,23 +53,34 @@ class receiver:
                     ind = (self.accum & 0xFC0000) >> 18
                     bts = i
 
-                    if self.count:
-                        self.count -= 1
-                        print(
-                            hex(self.accum),
-                            "ind",
-                            ind,
-                            "flg",
-                            flg,
-                            "rng",
-                            rng,
-                            "adc",
-                            adc,
-                            "bts",
-                            bts,
-                            "pos",
-                            self.pos,
+                    if self.pos == 24 and not flg:
+                        adc_mult = 1.8 / 163840
+                        if rng > 4:
+                            print("\n rng", rng, "in", hex(self.accum))
+                            rng = 4
+                        c = self.metadata.cali[rng]
+                        # rwg = (adc_value - O) * adc_mult / R
+                        # adc = UG * (rwg * (GS * rwg + GI) + (S * (vdd/1000) + 1))
+                        rwg = (adc - c.O) * (adc_mult / c.R)
+                        amps = c.UG * (
+                            rwg * (c.GS * rwg + c.GI)
+                            + (c.S * self.metadata.VDD / 1000.0 + c.I)
                         )
+                        self.avg = self.avg * 0.99 + amps * 0.01
+                        self.count += 1
+                        if self.count >= 10000:
+                            print(
+                                "{:-7.5f} : {}".format(
+                                    self.avg,
+                                    (
+                                        "+" * floor((log10(self.avg) + 5) * 8)
+                                        if self.avg > 0
+                                        else ""
+                                    ),
+                                ),
+                                end="\033[K\r",
+                            )
+                            self.count = 0
 
                     self.accum = 0
                     self.pos = 0
