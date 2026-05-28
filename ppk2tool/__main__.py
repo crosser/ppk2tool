@@ -7,6 +7,7 @@ from selectors import DefaultSelector, EVENT_READ
 from sys import argv, stdin
 from struct import unpack
 from termios import tcsetattr, TCSAFLUSH
+from time import CLOCK_MONOTONIC
 from tty import setcbreak
 from typing import ContextManager, Dict, Literal
 
@@ -32,11 +33,14 @@ class rawstdin(ContextManager[None]):
 
 class receiver:
     def __init__(self) -> None:
-        self.count: int = 0
         self.metadata: Optional[PPK2Meta] = None
         self.accum: int = 0
         self.pos: int = 0
         self.avg: float = 0.0
+        self.timer_up: bool = False
+
+    def timer(self) -> None:
+        self.timer_up = True
 
     def process(self, cmd: PPK2Cmd, data: PPK2Data) -> None:
         if cmd is PPK2Cmd.GET_META_DATA:
@@ -67,11 +71,11 @@ class receiver:
                             + (c.S * self.metadata.VDD / 1000.0 + c.I)
                         )
                         self.avg = self.avg * 0.99 + amps * 0.01
-                        self.count += 1
-                        if self.count >= 10000:
+                        if self.timer_up:
+                            self.timer_up = False
                             print(
-                                "{:-7.5f} : {}".format(
-                                    self.avg,
+                                "{:-9.3f} : {}".format(
+                                    self.avg * 1000,
                                     (
                                         "+" * floor((log10(self.avg) + 5) * 8)
                                         if self.avg > 0
@@ -80,7 +84,6 @@ class receiver:
                                 ),
                                 end="\033[K\r",
                             )
-                            self.count = 0
 
                     self.accum = 0
                     self.pos = 0
@@ -102,11 +105,12 @@ def bracket(voltage: float) -> float:
 
 
 if __name__ == "__main__":
-    topts, args = getopt(argv[1:], "dsv:")
+    topts, args = getopt(argv[1:], "dsv:f:")
     opts: Dict[str, str] = dict(topts)
     debug: bool = "-d" in opts
     passthrough: bool = "-s" in opts
     voltage: float = bracket(float(opts.get("-v", 3.7)))
+    frequency: int = opts.get("-f", 200)
     if len(args) == 1:
         devpath = args[0]
     else:
@@ -127,10 +131,22 @@ if __name__ == "__main__":
         "rb+",
         buffering=0,
         opener=lambda nm, flg: os.open(nm, flg | os.O_NOCTTY),
-    ) as tty, DefaultSelector() as sel, rawstdin():
+    ) as tty, open(
+        "timerfl",
+        "rb",
+        opener=lambda nm, flg: os.timerfd_create(
+            CLOCK_MONOTONIC, flags=os.TFD_NONBLOCK
+        ),
+    ) as timerfl, DefaultSelector() as sel, rawstdin():
         setcbreak(tty)
+        os.timerfd_settime_ns(
+            timerfl.fileno(),
+            initial=frequency * 1_000_000,
+            interval=frequency * 1_000_000,
+        )
         sel.register(stdin, EVENT_READ)
         sel.register(tty, EVENT_READ)
+        sel.register(timerfl, EVENT_READ)
         rctx = receiver()
         ctx = PPK2CTX(tty).setcallback(rctx.process)
         buffer = bytearray(1024)
@@ -177,6 +193,10 @@ if __name__ == "__main__":
                     elif events == EVENT_READ and key.fileobj == tty:
                         length = tty.readinto(buffer)
                         ctx.inject(buffer[:length])
+                    elif events == EVENT_READ and key.fileobj == timerfl:
+                        times = int.from_bytes(key.fileobj.read(8), "little")
+                        # print("timer event", times)
+                        rctx.timer()
                     else:
                         raise RuntimeError(
                             f"Events {events} on unknown fileobj {key}"
