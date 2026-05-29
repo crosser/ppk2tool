@@ -34,6 +34,7 @@ class rawstdin(ContextManager[None]):
 class receiver:
     def __init__(self) -> None:
         self.metadata: Optional[PPK2Meta] = None
+        self.vdd: float = 5000.0
         self.accum: int = 0
         self.pos: int = 0
         self.avg: float = 0.0
@@ -42,29 +43,34 @@ class receiver:
     def timer(self) -> None:
         self.timer_up = True
 
+    def setvdd(self, vdd: float) -> None:
+        self.vdd = vdd
+
     def process(self, cmd: PPK2Cmd, data: PPK2Data) -> None:
         if cmd is PPK2Cmd.GET_META_DATA:
             self.metadata = PPK2Meta.parse(data)
             print("metadata", self.metadata)
+            self.vdd = self.metadata.VDD
         else:  # assume that they are samples
             # if self.count < 200:
             #     print("incoming data", data[:8].hex(), len(data))
+            adc_mult = 1.8 / 163840.0
             for i in data:
                 if i == 0xFF:
-                    adc = self.accum & 0x007FFF
+                    adc = (self.accum & 0x007FFF) << 2
                     rng = (self.accum & 0x01C000) >> 14
                     flg = (self.accum & 0x020000) >> 17
                     ind = (self.accum & 0xFC0000) >> 18
                     bts = i
 
                     if self.pos == 24 and not flg:
-                        adc_mult = 1.8 / 163840
                         if rng > 4:
                             print("\n rng", rng, "in", hex(self.accum))
                             rng = 4
                         c = self.metadata.cali[rng]
-                        # rwg = (adc_value - O) * adc_mult / R
+                        # rwg = ((adc_value * 4) - O) * adc_mult / R
                         # adc = UG * (rwg * (GS * rwg + GI) + (S * (vdd/1000) + 1))
+                        # adc *= 1e6
                         rwg = (adc - c.O) * (adc_mult / c.R)
                         amps = c.UG * (
                             rwg * (c.GS * rwg + c.GI)
@@ -178,10 +184,9 @@ if __name__ == "__main__":
                                 voltage + 0.1 if k == "V" else voltage - 0.1
                             )
                             print("Output voltage changed to", voltage)
-                            ctx.cmd(
-                                PPK2Cmd.REGULATOR_SET,
-                                *divmod(int(voltage * 1000), 256),
-                            )
+                            vdd = int(voltage * 1000.0)
+                            rctx.setvdd(vdd)
+                            ctx.cmd(PPK2Cmd.REGULATOR_SET, *divmod(vdd, 256))
                         elif k in ("M", "m"):
                             ctx.cmd(
                                 PPK2Cmd.AVERAGE_START

@@ -61,12 +61,12 @@ class PPK2Meta(NamedTuple):
     HW: int
     mode: int
     IA: int
-    cali: Tuple[PPK2Cali, PPK2Cali, PPK2Cali, PPK2Cali, PPK2Cali]
+    cali: Tuple[PPK2Cali, ...]
 
     @classmethod
-    def parse(cls, data: bytes) -> "PPK2Cmd":
+    def parse(cls, data: bytes) -> "PPK2Meta":
         at, ft = partition(
-            lambda x: x[0][-1] in "01234",
+            lambda x: x[0][-1] in "0123456789",
             (
                 ln.split(": ")
                 for ln in data.decode("utf-8").split("\n")
