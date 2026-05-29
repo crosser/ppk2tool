@@ -151,7 +151,7 @@ if __name__ == "__main__":
         ctx = PPK2CTX(tty).setcallback(rctx.process)
         buffer = bytearray(1024)
 
-        ctx.cmd(PPK2Cmd.REGULATOR_SET, *divmod(int(voltage * 1000), 256))
+        ctx.cmd(PPK2Cmd.REGULATOR_SET, *divmod(int(voltage * 1000.0), 256))
         ctx.cmd(PPK2Cmd.SET_POWER_MODE, 1 if passthrough else 2)
         ctx.cmd(PPK2Cmd.GET_META_DATA)
 
