@@ -11,7 +11,7 @@ from time import CLOCK_MONOTONIC
 from tty import setcbreak
 from typing import ContextManager, Dict, Literal
 
-from . import PPK2CTX, PPK2Cmd, PPK2Data, PPK2Meta
+from . import PPK2CTX, PPK2Cmd, PPK2Sample, PPK2Meta
 
 
 class rawstdin(ContextManager[None]):
@@ -43,63 +43,27 @@ class receiver:
     def timer(self) -> None:
         self.timer_up = True
 
-    def setvdd(self, vdd: float) -> None:
-        self.vdd = vdd
-
-    def process(self, cmd: PPK2Cmd, data: PPK2Data) -> None:
-        if cmd is PPK2Cmd.GET_META_DATA:
-            self.metadata = PPK2Meta.parse(data)
+    def process(self, cmd: PPK2Cmd, data: PPK2Meta | PPK2Sample) -> None:
+        if isinstance(data, PPK2Meta):
+            self.metadata = data
             print("metadata", self.metadata)
             self.vdd = self.metadata.VDD
-        else:  # assume that they are samples
-            # if self.count < 200:
-            #     print("incoming data", data[:8].hex(), len(data))
-            adc_mult = 1.8 / 163840.0
-            for i in data:
-                if i == 0xFF:
-                    adc = (self.accum & 0x007FFF) << 2
-                    rng = (self.accum & 0x01C000) >> 14
-                    flg = (self.accum & 0x020000) >> 17
-                    ind = (self.accum & 0xFC0000) >> 18
-                    bts = i
-
-                    if self.pos == 24 and not flg:
-                        if rng > 4:
-                            print("\n rng", rng, "in", hex(self.accum))
-                            rng = 4
-                        c = self.metadata.cali[rng]
-                        # rwg = ((adc_value * 4) - O) * adc_mult / R
-                        # adc = UG * (rwg * (GS * rwg + GI) + (S * (vdd/1000) + 1))
-                        # adc *= 1e6
-                        rwg = (adc - c.O) * (adc_mult / c.R)
-                        amps = c.UG * (
-                            rwg * (c.GS * rwg + c.GI)
-                            + (c.S * self.metadata.VDD / 1000.0 + c.I)
-                        )
-                        self.avg = self.avg * 0.99 + amps * 0.01
-                        if self.timer_up:
-                            self.timer_up = False
-                            print(
-                                "{:-9.3f} : {}".format(
-                                    self.avg * 1000,
-                                    (
-                                        "+" * floor((log10(self.avg) + 5) * 8)
-                                        if self.avg > 0
-                                        else ""
-                                    ),
-                                ),
-                                end="\033[K\r",
-                            )
-
-                    self.accum = 0
-                    self.pos = 0
-                else:
-                    self.accum = (self.accum >> 8) | (i << 16)
-                    self.pos += 8
-                    if self.pos > 24:
-                        raise RuntimeError(
-                            f"no 0xff at {self.pos}, i={i} of {len(data)}"
-                        )
+        else:
+            # print(data)
+            self.avg = self.avg * 0.99 + data.amps * 0.01
+            if self.timer_up:
+                self.timer_up = False
+                print(
+                    "{:-9.3f} : {}".format(
+                        self.avg * 1000,
+                        (
+                            "+" * floor((log10(self.avg) + 5) * 8)
+                            if self.avg > 0
+                            else ""
+                        ),
+                    ),
+                    end="\033[K\r",
+                )
 
 
 def bracket(voltage: float) -> float:
@@ -162,8 +126,8 @@ if __name__ == "__main__":
         ctx.cmd(PPK2Cmd.GET_META_DATA)
 
         print(
-            "P/p: Power on/off, M/m: measuring start/stop, V/v: voltage 100mV up/down"
-            "\nQ or q: quit"
+            "P/p: Power on/off, M/m: measuring start/stop,"
+            " V/v: voltage 100mV up/down\nQ or q: quit"
         )
         running = True
         while running:
@@ -185,7 +149,7 @@ if __name__ == "__main__":
                             )
                             print("Output voltage changed to", voltage)
                             vdd = int(voltage * 1000.0)
-                            rctx.setvdd(vdd)
+                            ctx.setvdd(vdd)
                             ctx.cmd(PPK2Cmd.REGULATOR_SET, *divmod(vdd, 256))
                         elif k in ("M", "m"):
                             ctx.cmd(

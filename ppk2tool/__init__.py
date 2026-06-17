@@ -1,7 +1,9 @@
 """ppk2 API"""
 
+# APT dependency: python3-more-itertools # for `partition()`
+
 from abc import ABC
-from array import array
+from collections import deque
 from enum import Enum
 from itertools import groupby
 from more_itertools import partition
@@ -105,46 +107,120 @@ class PPK2Meta(NamedTuple):
         return cls(**kwargs, cali=cali)
 
 
-class PPK2Data(ABC):
+def inseq(x: int, y: int) -> bool:
+    return ((x >> 2) + 1) % 0x40 == (y >> 2) % 0x40
+
+
+class PPK2Sample(NamedTuple):
     """Response / data received from the kit"""
 
-    pass
+    logic: int  # 8 bits with GPIO channels
+    count: int  # 6-bit wrappable sample counter
+    band: int  # 3-bit precision band. Valid values from 0 to 4.
+    radc: int  # 14-bit raw ADC reading
+    amps: float  # converted ADC reading
+
+
+_adc_mult = 1.8 / 163840.0
 
 
 class PPK2CTX:
     """ppk2 context object"""
 
     def __init__(self, tty) -> None:
+        # buffer has space for three samples (of 4 bytes each).
         self.buffer = b""
+        self.fifo = deque(maxlen=12)
         self.tty = tty
         self.lastcmd = None
-        self.waitfor = None
+        self.waitmeta = False
+        self.cali = (
+            PPK2Cali(R=1031.64, GS=1, GI=1, O=0, S=0, I=0, UG=1),
+            PPK2Cali(R=101.65, GS=1, GI=1, O=0, S=0, I=0, UG=1),
+            PPK2Cali(R=10.15, GS=1, GI=1, O=0, S=0, I=0, UG=1),
+            PPK2Cali(R=0.94, GS=1, GI=1, O=0, S=0, I=0, UG=1),
+            PPK2Cali(R=0.043, GS=1, GI=1, O=0, S=0, I=0, UG=1),
+        )
+        self.vdd = 3.7
 
     def cmd(self, cmd: PPK2Cmd, *args: int) -> None:
         print("Writing command", cmd, args)
         self.lastcmd = cmd
         if cmd is PPK2Cmd.GET_META_DATA:
-            self.waitfor = lambda b: b.endswith(b"END\n")
-        else:
-            self.waitfor = None
+            self.waitmeta = True
         self.tty.write(bytes((*(cmd.value,), *args)))
 
     def setcallback(
-        self, cb: Callable[[PPK2Cmd, PPK2Data], None]
+        self, cb: Callable[[PPK2Cmd, PPK2Meta | PPK2Sample], None]
     ) -> "PPK2CTX":
         """Register function to call when something is ready"""
         self.cb = cb
         return self
 
+    def setvdd(self, vdd: float) -> None:
+        self.vdd = vdd
+
     def inject(self, data: bytes) -> None:
         """Accept raw data from the kit's serial interface"""
-        # print("Inject data", data)
-        self.buffer += data
-        if self.waitfor is not None:
-            if self.waitfor(self.buffer):
-                self.cb(self.lastcmd, self.buffer)
-                self.waitfor = None
+        # if self.printlimit:
+        #     self.printlimit -= 1
+        #     print("Inject data", len(self.buffer), data.hex())
+        if self.waitmeta:
+            self.buffer += data
+            if self.buffer.endswith(b"END\n"):
+                meta = PPK2Meta.parse(self.buffer)
+                self.cali = meta.cali
+                self.setvdd(meta.VDD)
+                self.waitmeta = False
                 self.buffer = b""
+                self.cb(self.lastcmd, meta)
         else:
-            self.cb(self.lastcmd, self.buffer)
-            self.buffer = b""
+            for b in data:
+                self.fifo.append(b)
+                if (
+                    len(self.fifo) > 10
+                    and inseq(self.fifo[2], self.fifo[6])
+                    and inseq(self.fifo[6], self.fifo[10])
+                ):
+                    # we are in sync, can consume four bytes
+
+                    # One sample is four bytes. When treated
+                    # as little endian 32bit int, the structure is:
+                    #
+                    # 3        2        1        0
+                    # -------- -------- -------- --------
+                    # llllllll cccccc-r rraaaaaa aaaaaaaa
+                    #
+                    # for logic line bits, wrappable sample counter,
+                    # precision rangem and ADC
+
+                    b3 = self.fifo.popleft()
+                    b2 = self.fifo.popleft()
+                    b1 = self.fifo.popleft()
+                    b0 = self.fifo.popleft()
+                    # print(b0, b1, b2, b3)
+                    radc = (b2 & 0x7F) << 8 | b3
+                    band = (b1 & 0x01) << 2 | (b2 >> 6)
+
+                    # https://github.com/nordicsemi/pc-nrfconnect-ppk/\
+                    #     blob/4cbb4c41c420ddb8125638fffc6d72f6b21c5aaa/\
+                    #     src/device/serialDevice.ts#L137
+                    c = self.cali[4 if band > 4 else band]
+                    rwg = ((radc << 2) - c.O) * (_adc_mult / c.R)
+                    amps = c.UG * (
+                        rwg * (c.GS * rwg + c.GI)
+                        + (c.S * (self.vdd / 1000.0) + c.I)
+                    )
+                    self.cb(
+                        self.lastcmd,
+                        PPK2Sample(
+                            logic=b0,
+                            count=b1 >> 2,
+                            band=band,
+                            radc=radc,
+                            amps=amps,
+                        ),
+                    )
+                # else:
+                #     if len(self.fifo) > 10:
+                #         print("Resync", self.fifo)
