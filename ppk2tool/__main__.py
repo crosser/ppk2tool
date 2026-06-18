@@ -80,7 +80,7 @@ if __name__ == "__main__":
     debug: bool = "-d" in opts
     passthrough: bool = "-s" in opts
     voltage: float = bracket(float(opts.get("-v", 3.7)))
-    frequency: int = opts.get("-f", 200)
+    frequency: int = int(opts.get("-f", 200))
     if len(args) == 1:
         devpath = args[0]
     else:
@@ -93,6 +93,7 @@ if __name__ == "__main__":
         if found != 1:
             print("zero or more than one profiler devices")
             exit(1)
+        assert devname is not None, "listdir() returned entry None?!"
         devpath = os.path.join("/dev/serial/by-id", devname)
     print("Using PPK on", devpath, "voltage", voltage, "V")
 

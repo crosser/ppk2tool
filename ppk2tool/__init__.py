@@ -160,7 +160,7 @@ class PPK2CTX:
     def setvdd(self, vdd: float) -> None:
         self.vdd = vdd
 
-    def inject(self, data: bytes) -> None:
+    def inject(self, data: bytearray | bytes) -> None:
         """Accept raw data from the kit's serial interface"""
         # if self.printlimit:
         #     self.printlimit -= 1
