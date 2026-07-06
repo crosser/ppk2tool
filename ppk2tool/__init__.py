@@ -22,6 +22,9 @@ class PPK2Cmd(Enum):
     """Command bytes"""
 
     # Shamelessly stolen from https://github.com/IRNAS/ppk2-api-python
+    # that itself was very likely shamelessly stolen from
+    # https://github.com/nordicsemi/pc-nrfconnect-ppk/blob/main/\
+    #   src/constants.ts
     NO_OP = 0x00
     TRIGGER_SET = 0x01
     AVG_NUM_SET = 0x02  # no-firmware
@@ -37,7 +40,7 @@ class PPK2Cmd(Enum):
     REGULATOR_SET = 0x0D
     SWITCH_POINT_DOWN = 0x0E
     SWITCH_POINT_UP = 0x0F
-    TRIGGER_EXT_TOGGLE = 0x10  # Not certain, was a typo upstream?
+    TRIGGER_EXT_TOGGLE = 0x10  # Looks like it's a typo in the upsream code?
     SET_POWER_MODE = 0x11
     RES_USER_SET = 0x12
     SPIKE_FILTERING_ON = 0x15
@@ -48,6 +51,8 @@ class PPK2Cmd(Enum):
 
 
 class PPK2Cali(NamedTuple):
+    """Calibration attributes. There are 5 sets of them."""
+
     R: float
     GS: float
     GI: float
@@ -58,8 +63,10 @@ class PPK2Cali(NamedTuple):
 
 
 class PPK2Meta(NamedTuple):
+    """Characteristins and calibration attributes given by the device"""
+
     Calibrated: bool
-    VDD: int
+    VDD: int  # in millivolt
     HW: int
     mode: int
     IA: int
@@ -67,6 +74,9 @@ class PPK2Meta(NamedTuple):
 
     @classmethod
     def parse(cls, data: bytes) -> "PPK2Meta":
+        # Attributes are printed as "key: value" pairs, one per line.
+        # Keys that end with a numeric character refer to indexed calibration
+        # values. Separate indexed and "normal" attributes:
         at, ft = partition(
             lambda x: x[0][-1] in "0123456789",
             (
@@ -76,9 +86,9 @@ class PPK2Meta(NamedTuple):
             ),
         )
         # print(tuple(at), tuple(ft))
-        attrs = {k: v for k, v in at}
-        factors = (
-            {k[:-1]: v for k, v in d}
+        attrs = {k: v for k, v in at}  # "normal" attributes
+        factors = (  # Group them by the value of the index, sorted
+            {k[:-1]: v for k, v in d}  # Drop the last char from the key
             for _, d in groupby(
                 sorted(ft, key=lambda x: x[0][-1]), key=lambda x: x[0][-1]
             )
@@ -108,6 +118,8 @@ class PPK2Meta(NamedTuple):
 
 
 def inseq(x: int, y: int) -> bool:
+    """Does the second integer follow the first, modulo 64?"""
+
     return ((x >> 2) + 1) % 0x40 == (y >> 2) % 0x40
 
 
@@ -118,7 +130,7 @@ class PPK2Sample(NamedTuple):
     count: int  # 6-bit wrappable sample counter
     band: int  # 3-bit precision band. Valid values from 0 to 4.
     radc: int  # 14-bit raw ADC reading
-    amps: float  # converted ADC reading
+    amps: float  # converted ADC reading in Amps
 
 
 _adc_mult = 1.8 / 163840.0
@@ -128,12 +140,15 @@ class PPK2CTX:
     """ppk2 context object"""
 
     def __init__(self, tty) -> None:
-        # buffer has space for three samples (of 4 bytes each).
         self.buffer = b""
+        # buffer has space for three samples (of 4 bytes each).
         self.fifo = deque(maxlen=12)
         self.tty = tty
         self.lastcmd = None
         self.waitmeta = False
+        # Default calibration matrix
+        # https://github.com/nordicsemi/pc-nrfconnect-ppk/blob/main\
+        #   /src/device/serialDevice.ts#L46
         self.cali = (
             PPK2Cali(R=1031.64, GS=1, GI=1, O=0, S=0, I=0, UG=1),
             PPK2Cali(R=101.65, GS=1, GI=1, O=0, S=0, I=0, UG=1),
@@ -141,7 +156,7 @@ class PPK2CTX:
             PPK2Cali(R=0.94, GS=1, GI=1, O=0, S=0, I=0, UG=1),
             PPK2Cali(R=0.043, GS=1, GI=1, O=0, S=0, I=0, UG=1),
         )
-        self.vdd = 3.7
+        self.vdd = 3.7  # in Volt
 
     def cmd(self, cmd: PPK2Cmd, *args: int) -> None:
         print("Writing command", cmd, args)
@@ -158,6 +173,7 @@ class PPK2CTX:
         return self
 
     def setvdd(self, vdd: float) -> None:
+        # Store VDD in Volts for calculating current mesaurement
         self.vdd = vdd
 
     def inject(self, data: bytearray | bytes) -> None:
@@ -170,7 +186,7 @@ class PPK2CTX:
             if self.buffer.endswith(b"END\n"):
                 meta = PPK2Meta.parse(self.buffer)
                 self.cali = meta.cali
-                self.setvdd(meta.VDD)
+                self.setvdd(meta.VDD / 1000.0)
                 self.waitmeta = False
                 self.buffer = b""
                 self.cb(self.lastcmd, meta)
@@ -187,29 +203,27 @@ class PPK2CTX:
                     # One sample is four bytes. When treated
                     # as little endian 32bit int, the structure is:
                     #
-                    # 3        2        1        0
+                    # 0        1        2        3
                     # -------- -------- -------- --------
                     # llllllll cccccc-r rraaaaaa aaaaaaaa
                     #
                     # for logic line bits, wrappable sample counter,
-                    # precision rangem and ADC
+                    # precision range, and ADC
 
                     b3 = self.fifo.popleft()
                     b2 = self.fifo.popleft()
                     b1 = self.fifo.popleft()
                     b0 = self.fifo.popleft()
                     # print(b0, b1, b2, b3)
-                    radc = (b2 & 0x7F) << 8 | b3
+                    radc = (b2 & 0x3F) << 8 | b3
                     band = (b1 & 0x01) << 2 | (b2 >> 6)
 
                     # https://github.com/nordicsemi/pc-nrfconnect-ppk/\
-                    #     blob/4cbb4c41c420ddb8125638fffc6d72f6b21c5aaa/\
-                    #     src/device/serialDevice.ts#L137
+                    #     blob/main/src/device/serialDevice.ts#L137
                     c = self.cali[4 if band > 4 else band]
-                    rwg = ((radc << 2) - c.O) * (_adc_mult / c.R)
+                    rwg = ((radc * 4.0) - c.O) * (_adc_mult / c.R)
                     amps = c.UG * (
-                        rwg * (c.GS * rwg + c.GI)
-                        + (c.S * (self.vdd / 1000.0) + c.I)
+                        rwg * (c.GS * rwg + c.GI) + (c.S * self.vdd + c.I)
                     )
                     self.cb(
                         self.lastcmd,
