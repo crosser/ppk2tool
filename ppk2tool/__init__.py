@@ -3,10 +3,10 @@
 # APT dependency: python3-more-itertools # for `partition()`
 
 from abc import ABC
-from collections import deque
 from enum import Enum
 from itertools import groupby
 from more_itertools import partition
+from struct import unpack
 from typing import (
     Callable,
     get_args,
@@ -142,7 +142,7 @@ class PPK2CTX:
     def __init__(self, tty) -> None:
         self.buffer = b""
         # buffer has space for three samples (of 4 bytes each).
-        self.fifo = deque(maxlen=12)
+        self.fifo = bytearray(12)
         self.tty = tty
         self.lastcmd = None
         self.waitmeta = False
@@ -191,14 +191,21 @@ class PPK2CTX:
                 self.buffer = b""
                 self.cb(self.lastcmd, meta)
         else:
+            skipmatch = 0  # To avoid accidental matches
             for b in data:
-                self.fifo.append(b)
-                if (
-                    len(self.fifo) > 10
-                    and inseq(self.fifo[2], self.fifo[6])
-                    and inseq(self.fifo[6], self.fifo[10])
+                self.fifo[1:] = self.fifo[:-1]
+                self.fifo[0] = b
+                if skipmatch:
+                    skipmatch -= 1
+                    continue
+                # print(self.fifo.hex(":", 4))
+                if inseq(self.fifo[5], self.fifo[1]) and inseq(
+                    self.fifo[9], self.fifo[5]
                 ):
+                    skipmatch = 3  # After match found, do not match next three
                     # we are in sync, can consume four bytes
+                    # print(self.fifo[0], self.fifo[1],
+                    #   self.fifo[2], self.fifo[3])
 
                     # One sample is four bytes. When treated
                     # as little endian 32bit int, the structure is:
@@ -210,13 +217,9 @@ class PPK2CTX:
                     # for logic line bits, wrappable sample counter,
                     # precision range, and ADC
 
-                    b3 = self.fifo.popleft()
-                    b2 = self.fifo.popleft()
-                    b1 = self.fifo.popleft()
-                    b0 = self.fifo.popleft()
-                    # print(b0, b1, b2, b3)
-                    radc = (b2 & 0x3F) << 8 | b3
-                    band = (b1 & 0x01) << 2 | (b2 >> 6)
+                    radc = (self.fifo[2] & 0x3F) << 8 | self.fifo[3]
+                    band = (self.fifo[1] & 0x01) << 2 | (self.fifo[2] >> 6)
+                    # print(self.fifo[0], self.fifo[1] >> 2, band, radc)
 
                     # https://github.com/nordicsemi/pc-nrfconnect-ppk/\
                     #     blob/main/src/device/serialDevice.ts#L137
@@ -228,8 +231,8 @@ class PPK2CTX:
                     self.cb(
                         self.lastcmd,
                         PPK2Sample(
-                            logic=b0,
-                            count=b1 >> 2,
+                            logic=self.fifo[0],
+                            count=self.fifo[1] >> 2,
                             band=band,
                             radc=radc,
                             amps=amps,
