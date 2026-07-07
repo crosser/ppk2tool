@@ -2,7 +2,7 @@
 debian/*debhelper*
 debian/*.substvars
 debian/files
-debian/ppk2tool/
+debian/python3-ppk2tool/
 .pybuild
 build
 ppk2tool.egg-info

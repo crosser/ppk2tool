@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppk2tool"
+dynamic = ["version"]
+description = "Library module and rudimentary CLI for NRF PPK2"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Linux",
+]
+authors = [{name = "Eugene Crosser", email = "crosser@average.org"}]
+readme = "README.md"
+license = "BSD-3-Clause"
+requires-python = ">=3.9"
+dependencies = [
+    "more_itertools",
+]
+
+[project.urls]
+Homepage = "https://www.average.org/ppk2tool.html"
+
+[tool.setuptools]
+packages = ["ppk2tool"]

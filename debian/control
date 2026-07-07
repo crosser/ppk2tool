@@ -1,0 +1,22 @@
+Source: ppk2tool
+Section: misc
+Priority: optional
+Maintainer: Eugene Crosser <crosser@average.org>
+Standards-Version: 4.5.1
+Build-Depends: debhelper-compat (= 12),
+               dh-python,
+               python3-all,
+               pybuild-plugin-pyproject,
+               python3-setuptools,
+               python3-more-itertools,
+               black,
+               mypy,
+               pylint
+X-Python-Version: >= 3.9
+Homepage: https://www.average.org/ppk2tool.html
+
+Package: python3-ppk2tool
+Architecture: any
+Depends: ${misc:Depends}, ${python3:Depends}
+Description: Library module and rudimentary CLI for NRF PPK2
+ Native python library to talk with Nordic Semiconductor Power Profiler 2
