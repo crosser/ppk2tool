@@ -97,18 +97,23 @@ if __name__ == "__main__":
         devpath = os.path.join("/dev/serial/by-id", devname)
     print("Using PPK on", devpath, "voltage", voltage, "V")
 
-    with open(
-        devpath,
-        "rb+",
-        buffering=0,
-        opener=lambda nm, flg: os.open(nm, flg | os.O_NOCTTY),
-    ) as tty, open(
-        "timerfl",
-        "rb",
-        opener=lambda nm, flg: os.timerfd_create(
-            CLOCK_MONOTONIC, flags=os.TFD_NONBLOCK
-        ),
-    ) as timerfl, DefaultSelector() as sel, rawstdin():
+    with (
+        open(
+            devpath,
+            "rb+",
+            buffering=0,
+            opener=lambda nm, flg: os.open(nm, flg | os.O_NOCTTY),
+        ) as tty,
+        open(
+            "timerfl",
+            "rb",
+            opener=lambda nm, flg: os.timerfd_create(
+                CLOCK_MONOTONIC, flags=os.TFD_NONBLOCK
+            ),
+        ) as timerfl,
+        DefaultSelector() as sel,
+        rawstdin(),
+    ):
         setcbreak(tty)
         os.timerfd_settime_ns(
             timerfl.fileno(),
