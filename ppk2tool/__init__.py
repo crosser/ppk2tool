@@ -12,7 +12,9 @@ from typing import (
     get_args,
     get_type_hints,
     get_origin,
+    IO,
     NamedTuple,
+    Optional,
     Sequence,
     Tuple,
 )
@@ -127,7 +129,7 @@ class PPK2Sample(NamedTuple):
     """Response / data received from the kit"""
 
     logic: int  # 8 bits with GPIO channels
-    count: int  # 6-bit wrappable sample counter
+    count: int  # type: ignore [assignment]  # 6-bit wrappable sample counter
     band: int  # 3-bit precision band. Valid values from 0 to 4.
     radc: int  # 14-bit raw ADC reading
     amps: float  # converted ADC reading in Amps
@@ -139,17 +141,17 @@ _adc_mult = 1.8 / 163840.0
 class PPK2CTX:
     """ppk2 context object"""
 
-    def __init__(self, tty) -> None:
+    def __init__(self, tty: IO[bytes]) -> None:
         self.buffer = b""
         # buffer has space for three samples (of 4 bytes each).
         self.fifo = bytearray(12)
         self.tty = tty
-        self.lastcmd = None
+        self.lastcmd: Optional[PPK2Cmd] = None
         self.waitmeta = False
         # Default calibration matrix
         # https://github.com/nordicsemi/pc-nrfconnect-ppk/blob/main\
         #   /src/device/serialDevice.ts#L46
-        self.cali = (
+        self.cali: Tuple[PPK2Cali, ...] = (
             PPK2Cali(R=1031.64, GS=1, GI=1, O=0, S=0, I=0, UG=1),
             PPK2Cali(R=101.65, GS=1, GI=1, O=0, S=0, I=0, UG=1),
             PPK2Cali(R=10.15, GS=1, GI=1, O=0, S=0, I=0, UG=1),
@@ -178,6 +180,7 @@ class PPK2CTX:
 
     def inject(self, data: bytearray | bytes) -> None:
         """Accept raw data from the kit's serial interface"""
+        assert self.lastcmd is not None
         # if self.printlimit:
         #     self.printlimit -= 1
         #     print("Inject data", len(self.buffer), data.hex())

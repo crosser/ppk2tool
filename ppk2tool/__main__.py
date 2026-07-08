@@ -9,7 +9,7 @@ from struct import unpack
 from termios import tcsetattr, TCSAFLUSH
 from time import CLOCK_MONOTONIC
 from tty import setcbreak
-from typing import ContextManager, Dict, Literal
+from typing import Any, ContextManager, Dict, List, Literal, Optional
 
 from . import PPK2CTX, PPK2Cmd, PPK2Sample, PPK2Meta
 
@@ -19,13 +19,13 @@ class rawstdin(ContextManager[None]):
 
     # This really ought to be in Python's standard library...
     def __init__(self) -> None:
-        self.old_tcattr = None
+        self.old_tcattr: Optional[List[Any]] = None
 
     def __enter__(self) -> None:
         if stdin.isatty():
             self.old_tcattr = setcbreak(stdin)
 
-    def __exit__(self, *_ex) -> Literal[False]:
+    def __exit__(self, *_ex: Any) -> Literal[False]:
         if self.old_tcattr is not None:
             tcsetattr(stdin, TCSAFLUSH, self.old_tcattr)
         return False
@@ -114,7 +114,7 @@ if __name__ == "__main__":
         DefaultSelector() as sel,
         rawstdin(),
     ):
-        setcbreak(tty)
+        setcbreak(tty.fileno())
         os.timerfd_settime_ns(
             timerfl.fileno(),
             initial=frequency * 1_000_000,
@@ -169,7 +169,7 @@ if __name__ == "__main__":
                         length = tty.readinto(buffer)
                         ctx.inject(buffer[:length])
                     elif events == EVENT_READ and key.fileobj == timerfl:
-                        times = int.from_bytes(key.fileobj.read(8), "little")
+                        times = int.from_bytes(timerfl.read(8), "little")
                         # print("timer event", times)
                         rctx.timer()
                     else:

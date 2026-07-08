@@ -6,7 +6,7 @@ from unittest import TestCase
 class BlackTest(TestCase):
     """Class for back formatting check"""
 
-    def test_run_black(self):
+    def test_run_black(self) -> None:
         result = call(
             [
                 "black",
