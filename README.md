@@ -21,16 +21,39 @@ There exists
 that can control the device; the code largely mirrors vendor's TypeScript
 implementation, that I've found unsatisfactory.
 
+The library does not contain any code to communicate with the device; calling
+application code needs to send byte blobs provided by the module to the line,
+and inject byte blobs that arrived from the line. The library will return
+parsed results via application-provided callback.
+
 To use the library,
 
 ```
 from ppk2tool import PPK2CTX, PPK2Cmd, PPK2Sample, PPK2Meta
 ```
 
-The library does not contain any code to communicate with the device; calling
-application code needs to send byte blobs provided by the module
-(NOTE: not the way it is implemented at the time of publication, to be fixed),
-and inject byte blobs that arrived from the usb-serial line. The library will
-return parsed results via application-provided callback.
+instantiate context object, and register callback: 
 
-Use `__main__.py` as an example.
+```
+ctx = PPK2CTX().setcallback(callback)
+```
+
+where callback has signature
+
+```
+callback(cmd: PPK2Cmd, data: PPK2Meta | PPK2Sample) -> None
+```
+
+In your eventloop, when you need to send a command, get it in bytes form
+by calling `ctx.cmd(cmd, *args)` and send them to the tty.
+(**NOTE:** do not shortcircuit this call: context object needs to "know"
+which command was the last one sent to the device!)
+For anything that comes out of the line, send received bytes to the
+context object:
+
+```
+length = tty.readinto(buffer)
+ctx.inject(buffer[:length])
+```
+
+See `__main__.py` for an example.

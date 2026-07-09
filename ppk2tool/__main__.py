@@ -124,12 +124,16 @@ if __name__ == "__main__":
         sel.register(tty, EVENT_READ)
         sel.register(timerfl, EVENT_READ)
         rctx = receiver()
-        ctx = PPK2CTX(tty).setcallback(rctx.process)
+        ctx = PPK2CTX().setcallback(rctx.process)
         buffer = bytearray(1024)
 
-        ctx.cmd(PPK2Cmd.REGULATOR_SET, *divmod(int(voltage * 1000.0), 256))
-        ctx.cmd(PPK2Cmd.SET_POWER_MODE, 1 if passthrough else 2)
-        ctx.cmd(PPK2Cmd.GET_META_DATA)
+        def send(cmd: PPK2Cmd, *args: int) -> None:
+            print("Writing command", cmd, args)
+            tty.write(ctx.cmd(cmd, *args))
+
+        send(PPK2Cmd.REGULATOR_SET, *divmod(int(voltage * 1000.0), 256))
+        send(PPK2Cmd.SET_POWER_MODE, 1 if passthrough else 2)
+        send(PPK2Cmd.GET_META_DATA)
 
         print(
             "P/p: Power on/off, M/m: measuring start/stop,"
@@ -148,7 +152,7 @@ if __name__ == "__main__":
                         if k in ("Q", "q"):
                             running = False
                         elif k in ("P", "p"):
-                            ctx.cmd(PPK2Cmd.DEVICE_RUNNING_SET, int(k == "P"))
+                            send(PPK2Cmd.DEVICE_RUNNING_SET, int(k == "P"))
                         elif k in ("V", "v"):
                             voltage = bracket(
                                 voltage + 0.1 if k == "V" else voltage - 0.1
@@ -156,9 +160,9 @@ if __name__ == "__main__":
                             print("Output voltage changed to", voltage)
                             vdd = int(voltage * 1000.0)
                             ctx.setvdd(vdd)
-                            ctx.cmd(PPK2Cmd.REGULATOR_SET, *divmod(vdd, 256))
+                            send(PPK2Cmd.REGULATOR_SET, *divmod(vdd, 256))
                         elif k in ("M", "m"):
-                            ctx.cmd(
+                            send(
                                 PPK2Cmd.AVERAGE_START
                                 if k == "M"
                                 else PPK2Cmd.AVERAGE_STOP
@@ -178,5 +182,5 @@ if __name__ == "__main__":
                         )
             except KeyboardInterrupt:
                 running = False
-        ctx.cmd(PPK2Cmd.RESET)
+        send(PPK2Cmd.RESET)
     print("Exit")

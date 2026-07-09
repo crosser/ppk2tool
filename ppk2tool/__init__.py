@@ -143,11 +143,10 @@ _adc_mult = 1.8 / 163840.0
 class PPK2CTX:
     """ppk2 context object"""
 
-    def __init__(self, tty: IO[bytes]) -> None:
+    def __init__(self) -> None:
         self.buffer = b""
         # buffer has space for three samples (of 4 bytes each).
         self.fifo = bytearray(12)
-        self.tty = tty
         self.lastcmd: Optional[PPK2Cmd] = None
         self.waitmeta = False
         # Default calibration matrix
@@ -162,12 +161,11 @@ class PPK2CTX:
         )
         self.vdd = 3.7  # in Volt
 
-    def cmd(self, cmd: PPK2Cmd, *args: int) -> None:
-        print("Writing command", cmd, args)
+    def cmd(self, cmd: PPK2Cmd, *args: int) -> bytes:
         self.lastcmd = cmd
         if cmd is PPK2Cmd.GET_META_DATA:
             self.waitmeta = True
-        self.tty.write(bytes((*(cmd.value,), *args)))
+        return bytes((*(cmd.value,), *args))
 
     def setcallback(
         self, cb: Callable[[PPK2Cmd, PPK2Meta | PPK2Sample], None]
