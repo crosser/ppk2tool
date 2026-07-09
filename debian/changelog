@@ -1,3 +1,14 @@
+ppk2tool (0.2) unstable; urgency=medium
+
+  * Add github action to build dpkg
+  * Expand README
+  * Add test for black formatting; reformat
+  * Add mypy test and fix type annotations
+  * define __all__ to export
+  * Execute all IO in the calling code
+
+ -- Eugene Crosser <crosser@average.org>  Thu, 09 Jul 2026 20:41:00 +0200
+
 ppk2tool (0.1) unstable; urgency=medium
 
   * Initial version
