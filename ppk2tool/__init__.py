@@ -160,6 +160,7 @@ class PPK2CTX:
             PPK2Cali(R=0.043, GS=1, GI=1, O=0, S=0, I=0, UG=1),
         )
         self.vdd = 3.7  # in Volt
+        self.prevband = 0
 
     def cmd(self, cmd: PPK2Cmd, *args: int) -> bytes:
         self.lastcmd = cmd
@@ -227,7 +228,10 @@ class PPK2CTX:
                     # precision range, and ADC
 
                     radc = (self.fifo[2] & 0x3F) << 8 | self.fifo[3]
-                    band = (self.fifo[1] & 0x01) << 2 | (self.fifo[2] >> 6)
+                    band = self.prevband
+                    self.prevband = (self.fifo[1] & 0x01) << 2 | (
+                        self.fifo[2] >> 6
+                    )
                     # print(self.fifo[0], self.fifo[1] >> 2, band, radc)
 
                     # https://github.com/nordicsemi/pc-nrfconnect-ppk/\
