@@ -194,6 +194,12 @@ class PPK2CTX:
                 self.buffer = b""
                 self.cb(self.lastcmd, meta)
         else:
+            # Looks wrong: band switch is out of line from radc jump
+            # PPK2Sample(logic=255, count=33, band=3, radc=1211, amps=0.05906891698790435)
+            # PPK2Sample(logic=255, count=34, band=3, radc=1095, amps=0.05279051211934667)
+            # PPK2Sample(logic=255, count=35, band=4, radc=1024, amps=0.8000853852710149)
+            # PPK2Sample(logic=255, count=36, band=4, radc=210, amps=0.1475281975249644)
+
             skipmatch = 0  # To avoid accidental matches
             for b in data:
                 self.fifo[1:] = self.fifo[:-1]
