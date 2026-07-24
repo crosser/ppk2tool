@@ -19,7 +19,7 @@ from typing import (
     Tuple,
 )
 
-__all__ = "PPK2CTX", "PPK2Cmd", "PPK2Sample", "PPK2Meta"
+__all__ = "PPK2CTX", "PPK2Cmd", "PPK2Sample", "PPK2Meta", "PPK2Stats"
 
 
 class PPK2Cmd(Enum):
@@ -121,20 +121,29 @@ class PPK2Meta(NamedTuple):
         return cls(**kwargs, cali=cali)
 
 
-def inseq(x: int, y: int) -> bool:
-    """Does the second integer follow the first, modulo 64?"""
-
-    return ((x >> 2) + 1) % 0x40 == (y >> 2) % 0x40
-
-
 class PPK2Sample(NamedTuple):
     """Response / data received from the kit"""
 
     logic: int  # 8 bits with GPIO channels
-    count: int  # type: ignore [assignment]  # 6-bit wrappable sample counter
+    seqno: int  # 6-bit wrappable sample counter
     band: int  # 3-bit precision band. Valid values from 0 to 4.
     radc: int  # 14-bit raw ADC reading
     amps: float  # converted ADC reading in Amps
+
+
+class PPK2Stats(NamedTuple):
+    """report processed / missed samples"""
+
+    missed: int = 0
+    conseq: int = 0
+    prev_seq: int = 0
+    curr_seq: int = 0
+
+
+def inseq(x: int, y: int) -> bool:
+    """Does the second integer follow the first, modulo 64?"""
+
+    return ((x >> 2) + 1) % 0x40 == (y >> 2) % 0x40
 
 
 _adc_mult = 1.8 / 163840.0
@@ -144,11 +153,14 @@ class PPK2CTX:
     """ppk2 context object"""
 
     def __init__(self) -> None:
-        self.buffer = b""
-        # buffer has space for three samples (of 4 bytes each).
+        self.insync: int = 0  # Running counter of good bytes
+        self.outofsync: int = 0  # Running counter of missed bytes
+        self.prevseq: int = 0  # Saved last seen sequence number
+        self.buffer: bytes = b""
+        # fifo buffer has space for three samples (of 4 bytes each).
         self.fifo = bytearray(12)
         self.lastcmd: Optional[PPK2Cmd] = None
-        self.waitmeta = False
+        self.waitmeta: bool = False
         # Default calibration matrix
         # https://github.com/nordicsemi/pc-nrfconnect-ppk/blob/main\
         #   /src/device/serialDevice.ts#L46
@@ -159,8 +171,8 @@ class PPK2CTX:
             PPK2Cali(R=0.94, GS=1, GI=1, O=0, S=0, I=0, UG=1),
             PPK2Cali(R=0.043, GS=1, GI=1, O=0, S=0, I=0, UG=1),
         )
-        self.vdd = 3.7  # in Volt
-        self.prevband = 0
+        self.vdd: float = 3.7  # in Volt
+        self.prevband: None | int = None
 
     def cmd(self, cmd: PPK2Cmd, *args: int) -> bytes:
         self.lastcmd = cmd
@@ -169,7 +181,7 @@ class PPK2CTX:
         return bytes((*(cmd.value,), *args))
 
     def setcallback(
-        self, cb: Callable[[PPK2Cmd, PPK2Meta | PPK2Sample], None]
+        self, cb: Callable[[PPK2Cmd, PPK2Meta | PPK2Sample | PPK2Stats], None]
     ) -> "PPK2CTX":
         """Register function to call when something is ready"""
         self.cb = cb
@@ -194,63 +206,76 @@ class PPK2CTX:
                 self.waitmeta = False
                 self.buffer = b""
                 self.cb(self.lastcmd, meta)
-        else:
-            # Looks wrong: band switch is out of line from radc jump
-            # PPK2Sample(logic=255, count=33, band=3, radc=1211, amps=0.05906891698790435)
-            # PPK2Sample(logic=255, count=34, band=3, radc=1095, amps=0.05279051211934667)
-            # PPK2Sample(logic=255, count=35, band=4, radc=1024, amps=0.8000853852710149)
-            # PPK2Sample(logic=255, count=36, band=4, radc=210, amps=0.1475281975249644)
+            return
 
-            skipmatch = 0  # To avoid accidental matches
-            for b in data:
-                self.fifo[1:] = self.fifo[:-1]
-                self.fifo[0] = b
-                if skipmatch:
-                    skipmatch -= 1
-                    continue
-                # print(self.fifo.hex(":", 4))
-                if inseq(self.fifo[5], self.fifo[1]) and inseq(
-                    self.fifo[9], self.fifo[5]
-                ):
-                    skipmatch = 3  # After match found, do not match next three
-                    # we are in sync, can consume four bytes
-                    # print(self.fifo[0], self.fifo[1],
-                    #   self.fifo[2], self.fifo[3])
+        # Otherwise samples
+        skipmatch = 0  # To avoid accidental matches
+        for b in data:
+            self.fifo[1:] = self.fifo[:-1]
+            self.fifo[0] = b
+            if skipmatch:
+                skipmatch -= 1
+                continue
+            # print(self.fifo.hex(":", 4))
+            if inseq(self.fifo[5], self.fifo[1]) and inseq(
+                self.fifo[9], self.fifo[5]
+            ):
+                skipmatch = 3  # After match found, do not match next three
 
-                    # One sample is four bytes. When treated
-                    # as little endian 32bit int, the structure is:
-                    #
-                    # 0        1        2        3
-                    # -------- -------- -------- --------
-                    # llllllll cccccc-r rraaaaaa aaaaaaaa
-                    #
-                    # for logic line bits, wrappable sample counter,
-                    # precision range, and ADC
+                # we are in sync, can consume four bytes
+                # print(self.fifo[0], self.fifo[1],
+                #   self.fifo[2], self.fifo[3])
 
-                    radc = (self.fifo[2] & 0x3F) << 8 | self.fifo[3]
-                    band = self.prevband
-                    self.prevband = (self.fifo[1] & 0x01) << 2 | (
-                        self.fifo[2] >> 6
-                    )
-                    # print(self.fifo[0], self.fifo[1] >> 2, band, radc)
+                # One sample is four bytes. When treated
+                # as little endian 32bit int, the structure is:
+                #
+                # 0        1        2        3
+                # -------- -------- -------- --------
+                # llllllll cccccc-r rraaaaaa aaaaaaaa
+                #
+                # for logic line bits, wrappable sample counter,
+                # precision range, and ADC
 
-                    # https://github.com/nordicsemi/pc-nrfconnect-ppk/\
-                    #     blob/main/src/device/serialDevice.ts#L137
-                    c = self.cali[4 if band > 4 else band]
-                    rwg = ((radc * 4.0) - c.O) * (_adc_mult / c.R)
-                    amps = c.UG * (
-                        rwg * (c.GS * rwg + c.GI) + (c.S * self.vdd + c.I)
-                    )
+                seqno = self.fifo[1] >> 2
+
+                if self.outofsync or (self.prevseq + 1) % 0x40 != seqno:
                     self.cb(
                         self.lastcmd,
-                        PPK2Sample(
-                            logic=self.fifo[0],
-                            count=self.fifo[1] >> 2,
-                            band=band,
-                            radc=radc,
-                            amps=amps,
+                        PPK2Stats(
+                            missed=self.outofsync,
+                            conseq=self.insync,
+                            prev_seq=self.prevseq,
+                            curr_seq=seqno,
                         ),
                     )
-                # else:
-                #     if len(self.fifo) > 10:
-                #         print("Resync", self.fifo)
+                    if self.outofsync:
+                        self.outofsync = 0
+                        self.insync = 0
+                self.insync += 4
+                self.prevseq = seqno
+
+                radc = (self.fifo[2] & 0x3F) << 8 | self.fifo[3]
+                band = (self.fifo[1] & 0x01) << 2 | (self.fifo[2] >> 6)
+                # print(self.fifo[0], self.fifo[1] >> 2, band, radc)
+                if self.prevband is None:
+                    self.prevband = band
+
+                # https://github.com/nordicsemi/pc-nrfconnect-ppk/\
+                #     blob/main/src/device/serialDevice.ts#L137
+                c = self.cali[4 if band > 4 else band]
+                rwg = ((radc * 4.0) - c.O) * (_adc_mult / c.R)
+                amps = c.UG * (
+                    rwg * (c.GS * rwg + c.GI) + (c.S * self.vdd + c.I)
+                )
+                self.cb(
+                    self.lastcmd,
+                    PPK2Sample(
+                        logic=self.fifo[0],
+                        seqno=seqno,
+                        band=band,
+                        radc=radc,
+                        amps=amps,
+                    ),
+                )
+            else:
+                self.outofsync += 1

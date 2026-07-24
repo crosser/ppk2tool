@@ -11,7 +11,7 @@ from time import CLOCK_MONOTONIC
 from tty import setcbreak
 from typing import Any, ContextManager, Dict, List, Literal, Optional
 
-from . import PPK2CTX, PPK2Cmd, PPK2Sample, PPK2Meta
+from . import PPK2CTX, PPK2Cmd, PPK2Sample, PPK2Meta, PPK2Stats
 
 
 class rawstdin(ContextManager[None]):
@@ -43,13 +43,14 @@ class receiver:
     def timer(self) -> None:
         self.timer_up = True
 
-    def process(self, cmd: PPK2Cmd, data: PPK2Meta | PPK2Sample) -> None:
+    def process(
+        self, cmd: PPK2Cmd, data: PPK2Meta | PPK2Sample | PPK2Stats
+    ) -> None:
         if isinstance(data, PPK2Meta):
             self.metadata = data
             print("metadata", self.metadata)
             self.vdd = self.metadata.VDD
-        else:
-            # print(data)
+        elif isinstance(data, PPK2Sample):
             self.avg = self.avg * 0.99 + data.amps * 0.01
             if self.timer_up:
                 self.timer_up = False
@@ -64,6 +65,8 @@ class receiver:
                     ),
                     end="\033[K\r",
                 )
+        else:
+            pass  # print(data)
 
 
 def bracket(voltage: float) -> float:
