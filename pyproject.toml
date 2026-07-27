@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=80", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -23,3 +23,5 @@ Homepage = "https://www.average.org/ppk2tool.html"
 
 [tool.setuptools]
 packages = ["ppk2tool"]
+
+[tool.setuptools_scm]
