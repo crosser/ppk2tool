@@ -132,7 +132,7 @@ class PPK2Sample(NamedTuple):
 
     @staticmethod
     def from_raw(
-        cali: tuple[PPK2Cali, ...], vdd: float, raw: bytes | bytearray
+        cali: tuple[PPK2Cali, ...], vdd: float, raw: bytes | memoryview
     ) -> "PPK2Sample":
         radc = (raw[2] & 0x3F) << 8 | raw[3]
         band = (raw[1] & 0x01) << 2 | (raw[2] >> 6)
@@ -237,12 +237,11 @@ class PPK2CTX:
                 skipmatch -= 1
                 continue
             # print(self.fifo.hex(":", 4))
-            if inseq(self.fifo[5], self.fifo[1]) and inseq(
-                self.fifo[9], self.fifo[5]
-            ):
+            fifo = memoryview(self.fifo)
+            if inseq(fifo[5], fifo[1]) and inseq(fifo[9], fifo[5]):
                 # we are in sync, can consume four bytes
-                # print(self.fifo[0], self.fifo[1],
-                #   self.fifo[2], self.fifo[3])
+                # print(fifo[0], fifo[1],
+                #   fifo[2], fifo[3])
 
                 # One sample is four bytes. When treated
                 # as little endian 32bit int, the structure is:
@@ -255,7 +254,7 @@ class PPK2CTX:
                 # precision range, and ADC
 
                 skipmatch = 3  # After match found, do not match next three
-                seqno = self.fifo[1] >> 2
+                seqno = fifo[1] >> 2
 
                 if self.outofsync or (self.prevseq + 1) % 0x40 != seqno:
                     self.cb(
@@ -275,13 +274,13 @@ class PPK2CTX:
                         self.cb(
                             self.lastcmd,
                             PPK2Sample.from_raw(
-                                self.cali, self.vdd, self.fifo[8:12]
+                                self.cali, self.vdd, fifo[8:12]
                             ),
                         )
                         self.cb(
                             self.lastcmd,
                             PPK2Sample.from_raw(
-                                self.cali, self.vdd, self.fifo[4:8]
+                                self.cali, self.vdd, fifo[4:8]
                             ),
                         )
                         # And reset out of sync and in sync counters
@@ -292,7 +291,7 @@ class PPK2CTX:
 
                 self.cb(
                     self.lastcmd,
-                    PPK2Sample.from_raw(self.cali, self.vdd, self.fifo[0:4]),
+                    PPK2Sample.from_raw(self.cali, self.vdd, fifo[0:4]),
                 )
             else:
                 self.outofsync += 1
