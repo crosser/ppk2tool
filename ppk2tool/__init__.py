@@ -136,6 +136,8 @@ class PPK2Sample(NamedTuple):
     ) -> "PPK2Sample":
         radc = (raw[2] & 0x3F) << 8 | raw[3]
         band = (raw[1] & 0x01) << 2 | (raw[2] >> 6)
+        if band > 4:
+            band = 4
         # print(raw[0], raw[1] >> 2, band, radc)
 
         # https://github.com/nordicsemi/pc-nrfconnect-ppk/\
