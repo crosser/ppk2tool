@@ -13,6 +13,7 @@ from typing import (
     get_type_hints,
     get_origin,
     IO,
+    Iterator,
     NamedTuple,
     Optional,
     Sequence,
@@ -172,18 +173,15 @@ def inseq(x: int, y: int) -> bool:
 _adc_mult = 1.8 / 163840.0
 
 
-class PPK2CTX:
-    """ppk2 context object"""
+class _PPK2RawSampler:
+    """Raw sampler"""
 
     def __init__(self) -> None:
+        # fifo buffer has space for three samples (of 4 bytes each).
+        self.fifo = bytearray(12)
         self.insync: int = 0  # Running counter of good bytes
         self.outofsync: int = 0  # Running counter of missed bytes
         self.prevseq: int = 0  # Saved last seen sequence number
-        self.buffer: bytes = b""
-        # fifo buffer has space for three samples (of 4 bytes each).
-        self.fifo = bytearray(12)
-        self.lastcmd: Optional[PPK2Cmd] = None
-        self.waitmeta: bool = False
         # Default calibration matrix
         # https://github.com/nordicsemi/pc-nrfconnect-ppk/blob/main\
         #   /src/device/serialDevice.ts#L46
@@ -194,43 +192,18 @@ class PPK2CTX:
             PPK2Cali(R=0.94, GS=1, GI=1, O=0, S=0, I=0, UG=1),
             PPK2Cali(R=0.043, GS=1, GI=1, O=0, S=0, I=0, UG=1),
         )
-        self.vdd: float = 3.7  # in Volt
+        self.vdd = 3.7
 
-    def cmd(self, cmd: PPK2Cmd, *args: int) -> bytes:
-        self.lastcmd = cmd
-        if cmd is PPK2Cmd.GET_META_DATA:
-            self.waitmeta = True
-        return bytes((*(cmd.value,), *args))
+    def set_cali(self, cali: Tuple[PPK2Cali, ...]) -> None:
+        self.cali = cali
 
-    def setcallback(
-        self, cb: Callable[[PPK2Cmd, PPK2Meta | PPK2Sample | PPK2Stats], None]
-    ) -> "PPK2CTX":
-        """Register function to call when something is ready"""
-        self.cb = cb
-        return self
-
-    def setvdd(self, vdd: float) -> None:
+    def set_vdd(self, vdd: float) -> None:
         # Store VDD in Volts for calculating current mesaurement
         self.vdd = vdd
 
-    def inject(self, data: bytearray | bytes) -> None:
-        """Accept raw data from the kit's serial interface"""
-        assert self.lastcmd is not None
-        # if self.printlimit:
-        #     self.printlimit -= 1
-        #     print("Inject data", len(self.buffer), data.hex())
-        if self.waitmeta:
-            self.buffer += data
-            if self.buffer.endswith(b"END\n"):
-                meta = PPK2Meta.parse(self.buffer)
-                self.cali = meta.cali
-                self.setvdd(meta.VDD / 1000.0)
-                self.waitmeta = False
-                self.buffer = b""
-                self.cb(self.lastcmd, meta)
-            return
-
-        # Otherwise samples
+    def __call__(
+        self, data: bytearray | bytes
+    ) -> Iterator[PPK2Sample | PPK2Stats]:
         skipmatch = 0  # To avoid accidental matches
         for b in data:
             self.fifo[1:] = self.fifo[:-1]
@@ -259,31 +232,22 @@ class PPK2CTX:
                 seqno = fifo[1] >> 2
 
                 if self.outofsync or (self.prevseq + 1) % 0x40 != seqno:
-                    self.cb(
-                        self.lastcmd,
-                        PPK2Stats(
-                            missed=self.outofsync,
-                            conseq=self.insync,
-                            prev_seq=self.prevseq,
-                            curr_seq=seqno,
-                        ),
+                    yield PPK2Stats(
+                        missed=self.outofsync,
+                        conseq=self.insync,
+                        prev_seq=self.prevseq,
+                        curr_seq=seqno,
                     )
                     if self.outofsync:
                         # The previous state was "out of sync".
                         # Now it is in sync, and that means that we can
                         # report two previous samples in addition to the
                         # latest one.
-                        self.cb(
-                            self.lastcmd,
-                            PPK2Sample.from_raw(
-                                self.cali, self.vdd, fifo[8:12]
-                            ),
+                        yield PPK2Sample.from_raw(
+                            self.cali, self.vdd, fifo[8:12]
                         )
-                        self.cb(
-                            self.lastcmd,
-                            PPK2Sample.from_raw(
-                                self.cali, self.vdd, fifo[4:8]
-                            ),
+                        yield PPK2Sample.from_raw(
+                            self.cali, self.vdd, fifo[4:8]
                         )
                         # And reset out of sync and in sync counters
                         self.outofsync = 0
@@ -291,9 +255,57 @@ class PPK2CTX:
                 self.insync += 1
                 self.prevseq = seqno
 
-                self.cb(
-                    self.lastcmd,
-                    PPK2Sample.from_raw(self.cali, self.vdd, fifo[0:4]),
-                )
+                yield PPK2Sample.from_raw(self.cali, self.vdd, fifo[0:4])
             else:
                 self.outofsync += 1
+
+
+class _PPK2SmoothSampler(_PPK2RawSampler):
+    pass
+
+
+class PPK2CTX:
+    """ppk2 context object"""
+
+    def __init__(self, raw: bool = False) -> None:
+        self.buffer: bytes = b""
+        self.lastcmd: Optional[PPK2Cmd] = None
+        self.waitmeta: bool = False
+        self.sampler = _PPK2RawSampler() if raw else _PPK2SmoothSampler()
+
+    def cmd(self, cmd: PPK2Cmd, *args: int) -> bytes:
+        self.lastcmd = cmd
+        if cmd is PPK2Cmd.GET_META_DATA:
+            self.waitmeta = True
+        return bytes((*(cmd.value,), *args))
+
+    def setvdd(self, vdd: int) -> None:
+        self.sampler.set_vdd(vdd)
+
+    def setcallback(
+        self, cb: Callable[[PPK2Cmd, PPK2Meta | PPK2Sample | PPK2Stats], None]
+    ) -> "PPK2CTX":
+        """Register function to call when something is ready"""
+        self.cb = cb
+        return self
+
+    def inject(self, data: bytearray | bytes) -> None:
+        """Accept raw data from the kit's serial interface"""
+        assert self.lastcmd is not None
+        # if self.printlimit:
+        #     self.printlimit -= 1
+        #     print("Inject data", len(self.buffer), data.hex())
+        if self.waitmeta:
+            self.buffer += data
+            if self.buffer.endswith(b"END\n"):
+                meta = PPK2Meta.parse(self.buffer)
+                self.sampler.set_cali(meta.cali)
+                self.sampler.set_vdd(meta.VDD / 1000.0)
+                self.waitmeta = False
+                self.buffer = b""
+                self.cb(self.lastcmd, meta)
+            return
+
+        # Otherwise samples
+        for sample in self.sampler(data):
+            self.cb(self.lastcmd, sample)
