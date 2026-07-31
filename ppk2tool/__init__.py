@@ -131,29 +131,6 @@ class PPK2Sample(NamedTuple):
     radc: int  # 14-bit raw ADC reading
     amps: float  # converted ADC reading in Amps
 
-    @staticmethod
-    def from_raw(
-        cali: tuple[PPK2Cali, ...], vdd: float, raw: bytes | memoryview
-    ) -> "PPK2Sample":
-        radc = (raw[2] & 0x3F) << 8 | raw[3]
-        band = (raw[1] & 0x01) << 2 | (raw[2] >> 6)
-        if band > 4:
-            band = 4
-        # print(raw[0], raw[1] >> 2, band, radc)
-
-        # https://github.com/nordicsemi/pc-nrfconnect-ppk/\
-        #     blob/main/src/device/serialDevice.ts#L137
-        c = cali[4 if band > 4 else band]
-        rwg = ((radc * 4.0) - c.O) * (_adc_mult / c.R)
-        amps = c.UG * (rwg * (c.GS * rwg + c.GI) + (c.S * vdd + c.I))
-        return PPK2Sample(
-            logic=raw[0],
-            seqno=raw[1] >> 2,
-            band=band,
-            radc=radc,
-            amps=amps,
-        )
-
 
 class PPK2Stats(NamedTuple):
     """report processed / missed samples"""
@@ -173,12 +150,13 @@ def inseq(x: int, y: int) -> bool:
 _adc_mult = 1.8 / 163840.0
 
 
-class _PPK2RawSampler:
-    """Raw sampler"""
+class _PPK2Sampler:
+    """First stage sampler"""
 
     def __init__(self) -> None:
         # fifo buffer has space for three samples (of 4 bytes each).
         self.fifo = bytearray(12)
+        self.skipmatch = 0  # To avoid accidental matches
         self.insync: int = 0  # Running counter of good bytes
         self.outofsync: int = 0  # Running counter of missed bytes
         self.prevseq: int = 0  # Saved last seen sequence number
@@ -201,15 +179,31 @@ class _PPK2RawSampler:
         # Store VDD in Volts for calculating current mesaurement
         self.vdd = vdd
 
-    def __call__(
+    def parse_sample(
+        self, raw: memoryview
+    ) -> Tuple[int, int, int, int, float]:
+        radc = (raw[2] & 0x3F) << 8 | raw[3]
+        band = (raw[1] & 0x01) << 2 | (raw[2] >> 6)
+        if band > 4:
+            band = 4
+        # print(raw[0], raw[1] >> 2, band, radc)
+
+        # https://github.com/nordicsemi/pc-nrfconnect-ppk/\
+        #     blob/main/src/device/serialDevice.ts#L137
+        c = self.cali[4 if band > 4 else band]
+        rwg = ((radc * 4.0) - c.O) * (_adc_mult / c.R)
+        amps = c.UG * (rwg * (c.GS * rwg + c.GI) + (c.S * self.vdd + c.I))
+
+        return raw[0], raw[1] >> 2, band, radc, amps
+
+    def yield_samples(
         self, data: bytearray | bytes
-    ) -> Iterator[PPK2Sample | PPK2Stats]:
-        skipmatch = 0  # To avoid accidental matches
+    ) -> Iterator[Tuple[int, int, int, int, float] | PPK2Stats]:
         for b in data:
             self.fifo[1:] = self.fifo[:-1]
             self.fifo[0] = b
-            if skipmatch:
-                skipmatch -= 1
+            if self.skipmatch:
+                self.skipmatch -= 1
                 continue
             # print(self.fifo.hex(":", 4))
             fifo = memoryview(self.fifo)
@@ -228,7 +222,9 @@ class _PPK2RawSampler:
                 # for logic line bits, wrappable sample counter,
                 # precision range, and ADC
 
-                skipmatch = 3  # After match found, do not match next three
+                self.skipmatch = (
+                    3  # After match found, do not match next three
+                )
                 seqno = fifo[1] >> 2
 
                 if self.outofsync or (self.prevseq + 1) % 0x40 != seqno:
@@ -243,25 +239,57 @@ class _PPK2RawSampler:
                         # Now it is in sync, and that means that we can
                         # report two previous samples in addition to the
                         # latest one.
-                        yield PPK2Sample.from_raw(
-                            self.cali, self.vdd, fifo[8:12]
-                        )
-                        yield PPK2Sample.from_raw(
-                            self.cali, self.vdd, fifo[4:8]
-                        )
+                        yield self.parse_sample(fifo[8:12])
+                        yield self.parse_sample(fifo[4:8])
                         # And reset out of sync and in sync counters
                         self.outofsync = 0
                         self.insync = 2
                 self.insync += 1
                 self.prevseq = seqno
 
-                yield PPK2Sample.from_raw(self.cali, self.vdd, fifo[0:4])
+                yield self.parse_sample(fifo[0:4])
             else:
                 self.outofsync += 1
 
 
-class _PPK2SmoothSampler(_PPK2RawSampler):
-    pass
+class _PPK2RawSampler(_PPK2Sampler):
+    """Raw sampler"""
+
+    def __call__(
+        self, data: bytearray | bytes
+    ) -> Iterator[PPK2Sample | PPK2Stats]:
+        for elem in self.yield_samples(data):
+            match elem:
+                case logic, seqno, band, radc, amps:
+                    yield PPK2Sample(
+                        logic=logic,  # type: ignore [arg-type]
+                        seqno=seqno,  # type: ignore [arg-type]
+                        band=band,  # type: ignore [arg-type]
+                        radc=radc,  # type: ignore [arg-type]
+                        amps=amps,
+                    )
+                case PPK2Stats():
+                    yield elem  # passthrough
+
+
+class _PPK2SmoothSampler(_PPK2Sampler):
+    """Smooting sampler"""
+
+    def __call__(
+        self, data: bytearray | bytes
+    ) -> Iterator[PPK2Sample | PPK2Stats]:
+        for elem in self.yield_samples(data):
+            match elem:
+                case logic, seqno, band, radc, amps:
+                    yield PPK2Sample(
+                        logic=logic,  # type: ignore [arg-type]
+                        seqno=seqno,  # type: ignore [arg-type]
+                        band=band,  # type: ignore [arg-type]
+                        radc=radc,  # type: ignore [arg-type]
+                        amps=amps,
+                    )
+                case PPK2Stats():
+                    yield elem  # passthrough
 
 
 class PPK2CTX:
