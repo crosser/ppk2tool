@@ -275,12 +275,43 @@ class _PPK2RawSampler(_PPK2Sampler):
 class _PPK2SmoothSampler(_PPK2Sampler):
     """Smooting sampler"""
 
+    def __init__(self) -> None:
+        super().__init__()
+        self.too_fresh: int = 0
+        self.after_spike: int = 0
+        self.prev_band: int | None = None
+        self.avg: float = 0.0
+
     def __call__(
         self, data: bytearray | bytes
     ) -> Iterator[PPK2Sample | PPK2Stats]:
         for elem in self.yield_samples(data):
             match elem:
                 case logic, seqno, band, radc, amps:
+                    if self.prev_band is None:
+                        self.prev_band = band  # type: ignore [assignment]
+                    if band != self.prev_band:
+                        self.too_fresh = 4
+                        self.prev_band = band  # type: ignore [assignment]
+                    if amps > 1.0:
+                        # print("Spike", data, "prevband", self.prev_band,
+                        #       "too_fresh", self.too_fresh)
+                        self.after_spike = 3
+                    if self.after_spike:
+                        self.after_spike -= 1
+                    if self.too_fresh:
+                        self.too_fresh -= 1
+                    if self.after_spike or self.too_fresh:
+                        return
+
+                    alpha = 0.06 if band == 4 else 0.18
+                    beta = 1.0 - alpha
+                    if amps < 0.00001:
+                        amps = 0.00001
+                    elif amps > 1.0:
+                        amps = 1.0
+                    self.avg = self.avg * beta + amps * alpha
+
                     yield PPK2Sample(
                         logic=logic,  # type: ignore [arg-type]
                         seqno=seqno,  # type: ignore [arg-type]
