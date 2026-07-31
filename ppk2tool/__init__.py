@@ -184,13 +184,13 @@ class _PPK2Sampler:
     ) -> Tuple[int, int, int, int, float]:
         radc = (raw[2] & 0x3F) << 8 | raw[3]
         band = (raw[1] & 0x01) << 2 | (raw[2] >> 6)
-        if band > 4:
-            band = 4
         # print(raw[0], raw[1] >> 2, band, radc)
 
         # https://github.com/nordicsemi/pc-nrfconnect-ppk/\
         #     blob/main/src/device/serialDevice.ts#L137
-        c = self.cali[4 if band > 4 else band]
+        if band > 4:
+            band = 4
+        c = self.cali[band]
         rwg = ((radc * 4.0) - c.O) * (_adc_mult / c.R)
         amps = c.UG * (rwg * (c.GS * rwg + c.GI) + (c.S * self.vdd + c.I))
 
