@@ -1,3 +1,19 @@
+ppk2tool (0.3) unstable; urgency=medium
+
+  * Document misalignment in a comment
+  * Experimentally, use previous value of "range"
+  * Report stats on resync
+  * pyproject: pacify tool.setuptools_scm
+  * After resync, report previous two samples
+  * Use memoryview() to reduce copies
+  * Limit band to 4
+  * Prepare to move smoother here
+  * Rearrange control flow to allow smoothing
+  * Don't double-check for band <= 4
+  * Implement smoothing
+
+ -- Eugene Crosser <crosser@average.org>  Fri, 31 Jul 2026 17:42:40 +0200
+
 ppk2tool (0.2) unstable; urgency=medium
 
   * Add github action to build dpkg
