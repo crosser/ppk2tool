@@ -1,0 +1,193 @@
+#!/bin/sh
+
+set -eu
+
+# shellcheck source=scripts/lib.sh
+. "${0%/*}/lib.sh"
+
+# Usage:
+#   check_path_prefix PATH PREFIX
+check_path_prefix()
+{
+	real_prefix=$(realpath "$2")
+	case "$(realpath --canonicalize-missing -- "$1")" in
+	"$real_prefix" | "$real_prefix/"*)
+		return 0
+		;;
+	esac
+
+	return 1
+}
+
+# Usage:
+#   create_output OUTPUTS_DIR OUTPUT_NAME
+create_output()
+{
+	mkdir -p -- "$1"
+	touch -- "${1%/}/${2}"
+	export -- "OUTPUT_${2}=/github/build/outputs/${2}"
+}
+
+start_group "Preparing"
+build_dir=$(mktemp --directory --tmpdir="${RUNNER_TEMP-}" build-deb-action-XXXXXX)
+printf 'build-dir=%s\n' "$build_dir" >>"$GITHUB_OUTPUT"
+
+env_file=$build_dir/env
+extra_repo_keys_file=$build_dir/build-deb-action.asc
+extra_repo_key_files_file=$build_dir/extra_repo_key_files
+gitconfig_file=$build_dir/gitconfig
+outputs_dir=${build_dir}/outputs
+
+INPUT_ARTIFACTS_DIR=${INPUT_ARTIFACTS_DIR:-.}
+if ! check_path_prefix "$INPUT_ARTIFACTS_DIR" "$GITHUB_WORKSPACE"; then
+	die 2 "artifacts-dir is not in GITHUB_WORKSPACE"
+fi
+
+INPUT_SOURCE_DIR=${INPUT_SOURCE_DIR:-.}
+if ! check_path_prefix "$INPUT_SOURCE_DIR" "$GITHUB_WORKSPACE"; then
+	die 2 "source-dir is not in GITHUB_WORKSPACE"
+fi
+
+create_output "$outputs_dir" ARTIFACTS
+
+touch "$extra_repo_key_files_file"
+if [ "$INPUT_EXTRA_REPO_KEYS" ]; then
+	printf '%s\n' "$INPUT_EXTRA_REPO_KEYS" >"$extra_repo_keys_file"
+
+	while read -r extra_repo_key_file; do
+		[ "$extra_repo_key_file" ] || continue
+
+		if [ ! -f "$extra_repo_key_file" ]; then
+			if [ -s "$extra_repo_key_files_file" ]; then
+				die 2 "extra-repo-keys cannot contain both ASCII-armored keys and key file paths"
+			fi
+
+			# Looks like (an) ASCII-armored key(s)
+			break
+		fi
+
+		if ! check_path_prefix "$extra_repo_key_file" "$GITHUB_WORKSPACE"; then
+			die 2 "A path to a key file in extra-repo-keys is not in GITHUB_WORKSPACE"
+		fi
+
+		printf '%s\n' "$extra_repo_key_file" >>"$extra_repo_key_files_file"
+	done <"$extra_repo_keys_file"
+
+	if [ ! -s "$extra_repo_key_files_file" ]; then
+		printf '/github/build/%s\n' "${extra_repo_keys_file##*/}" >"$extra_repo_key_files_file"
+	fi
+fi
+end_group
+
+if [ -f "$INPUT_DOCKER_IMAGE" ]; then
+	if ! check_path_prefix "$INPUT_DOCKER_IMAGE" "$GITHUB_WORKSPACE"; then
+		die 2 "docker-image is the path of a Dockerfile but it is not in GITHUB_WORKSPACE"
+	fi
+
+	start_group "Building container image"
+	image_id_file=$build_dir/image_id
+	docker build \
+		--file="$INPUT_DOCKER_IMAGE" \
+		--iidfile="$image_id_file" \
+		-- "$GITHUB_WORKSPACE/$(dirname -- "$INPUT_DOCKER_IMAGE")"
+	read -r INPUT_DOCKER_IMAGE <"$image_id_file" || :
+	end_group
+fi
+
+start_group "Starting build container"
+# Docker does not like variable values containing newlines in an --env-file, we
+# will pass them separately:
+env \
+	--unset=INPUT_BEFORE_BUILD_HOOK \
+	--unset=INPUT_EXTRA_REPO_KEYS \
+	--unset=INPUT_EXTRA_REPOS \
+	--unset=INPUT_SETUP_HOOK \
+	>"$env_file"
+
+container_id_file=${build_dir}/container_id
+# shellcheck disable=SC2086
+container_id=$(
+	docker run \
+		$INPUT_EXTRA_DOCKER_ARGS \
+		--cidfile="$container_id_file" \
+		--detach \
+		--env-file="$env_file" \
+		--env=GITHUB_ACTION_PATH=/github/action \
+		--env=GITHUB_WORKSPACE=/github/workspace \
+		--env=INPUT_EXTRA_REPOS \
+		--mount="type=bind,src=${GITHUB_ACTION_PATH},dst=/github/action,ro" \
+		--mount="type=bind,src=${build_dir},dst=/github/build" \
+		--mount="type=bind,src=${GITHUB_WORKSPACE},dst=/github/workspace" \
+		--rm \
+		--workdir=/github/workspace \
+		-- \
+		"$INPUT_DOCKER_IMAGE" \
+		tail -f /dev/null
+)
+
+in_container()
+{
+	docker exec "$container_id" "$@"
+}
+
+if ! in_container /github/action/scripts/probe_env; then
+	die 2 "docker-image is not a Debian-based Docker image/Dockerfile"
+fi
+end_group
+
+start_group "Setting up build container"
+while read -r extra_repo_key_file; do
+	in_container install \
+		--mode=644 \
+		--target-directory=/etc/apt/trusted.gpg.d \
+		"$extra_repo_key_file"
+done <"$extra_repo_key_files_file"
+
+# git is always available here outside the build container, in the environment
+# of a run step.
+
+# To simplify the usage of git from a hook, we mark all directories as safe.
+# Otherwise git would complain, since a hook is run as root but the workspace
+# repository belongs to a different user.
+git config --file="$gitconfig_file" safe.directory '*'
+
+in_container install \
+	--mode=644 \
+	--no-target-directory \
+	/github/build/gitconfig \
+	/etc/gitconfig
+end_group
+
+if [ -n "$INPUT_SETUP_HOOK" ]; then
+	start_group "Executing setup hook"
+	in_container /bin/sh -c "$INPUT_SETUP_HOOK"
+	end_group
+fi
+
+start_group "Installing build dependencies"
+in_container /github/action/scripts/install_build_deps
+end_group
+
+if [ -n "$INPUT_BEFORE_BUILD_HOOK" ]; then
+	start_group "Executing before-build hook"
+	in_container /bin/sh -c "$INPUT_BEFORE_BUILD_HOOK"
+	end_group
+fi
+
+start_group "Building package"
+in_container /github/action/scripts/build_packages
+end_group
+
+start_group "Moving artifacts"
+in_container /github/action/scripts/move_artifacts
+end_group
+
+start_group "Setting outputs"
+for output in "$outputs_dir"/*; do
+	{
+		printf '%s<<EOF\n' "${output##*/}"
+		cat -- "$output"
+		printf 'EOF\n'
+	} >>"$GITHUB_OUTPUT"
+done
+end_group

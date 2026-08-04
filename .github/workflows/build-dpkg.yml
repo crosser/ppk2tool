@@ -12,15 +12,17 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Build Package
-        uses: crosser/build-dpkg@HEAD
+        uses: crosser/ppk2tool/build-deb-action@HEAD
         id: build
+        env:
+          DEB_BUILD_OPTIONS: noautodbgsym
         with:
-          args: --unsigned-source --unsigned-changes
+          buildpackage-opts: --build=binary --no-sign
 
       - name: Upload Release
         run: >
           gh release create ${{ github.ref_name }}
-          ${{ steps.build.outputs.filename }}
+          $(echo ${{ steps.build.outputs.artifacts }})
         env:
           GITHUB_TOKEN: ${{ github.TOKEN }}
         shell: bash
