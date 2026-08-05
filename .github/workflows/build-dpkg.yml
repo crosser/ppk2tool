@@ -18,11 +18,11 @@ jobs:
           DEB_BUILD_OPTIONS: noautodbgsym
         with:
           buildpackage-opts: --build=binary --no-sign
+          # Output defaults to debian/artifacts directory
 
       - name: Upload Release
         run: >
-          gh release create ${{ github.ref_name }}
-          $(echo ${{ steps.build.outputs.artifacts }})
+          gh release create ${{ github.ref_name }} debian/artifacts/*
         env:
           GITHUB_TOKEN: ${{ github.TOKEN }}
         shell: bash
