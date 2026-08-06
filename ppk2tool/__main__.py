@@ -1,11 +1,12 @@
 """Example frontend for PPK2 profiler"""
 
+# pylint: disable=invalid-name
+
 from getopt import getopt  # pylint: disable=deprecated-module
 from math import floor, log10
 import os
 from selectors import DefaultSelector, EVENT_READ
-from sys import argv, stdin
-from struct import unpack
+from sys import argv, exit, stdin  # pylint: disable=redefined-builtin
 from termios import tcsetattr, TCSAFLUSH
 from time import CLOCK_MONOTONIC
 from tty import setcbreak
@@ -32,6 +33,8 @@ class rawstdin(ContextManager[None]):
 
 
 class receiver:
+    """Closure-like object to use as the callback for parsed samples"""
+
     def __init__(self) -> None:
         self.metadata: Optional[PPK2Meta] = None
         self.vdd: float = 5000.0
@@ -41,11 +44,13 @@ class receiver:
         self.timer_up: bool = False
 
     def timer(self) -> None:
+        """Raise the flag when timer callback happens"""
         self.timer_up = True
 
     def process(
-        self, cmd: PPK2Cmd, data: PPK2Meta | PPK2Sample | PPK2Stats
+        self, _cmd: PPK2Cmd, data: PPK2Meta | PPK2Sample | PPK2Stats
     ) -> None:
+        """Callback that accepts parsed samples"""
         if isinstance(data, PPK2Meta):
             self.metadata = data
             print("metadata", self.metadata)
@@ -55,6 +60,7 @@ class receiver:
             if self.timer_up:
                 self.timer_up = False
                 print(
+                    # pylint: disable=consider-using-f-string
                     "{:-9.3f} : {}".format(
                         self.avg * 1000,
                         (
@@ -69,7 +75,8 @@ class receiver:
             pass  # print(data)
 
 
-def bracket(voltage: float) -> float:
+def bracket(voltage: float) -> float:  # pylint: disable=redefined-outer-name
+    """Bracket float value inside the interval supported by the hardware"""
     if voltage < 0.8:
         return 0.8
     if voltage > 5.0:
@@ -130,9 +137,10 @@ if __name__ == "__main__":
         ctx = PPK2CTX().setcallback(rctx.process)
         buffer = bytearray(1024)
 
-        def send(cmd: PPK2Cmd, *args: int) -> None:
-            print("Writing command", cmd, args)
-            tty.write(ctx.cmd(cmd, *args))
+        def send(cmd: PPK2Cmd, *parms: int) -> None:
+            """Send command with parameters to PPK2"""
+            print("Writing command", cmd, parms)
+            tty.write(ctx.cmd(cmd, *parms))
 
         send(PPK2Cmd.REGULATOR_SET, *divmod(int(voltage * 1000.0), 256))
         send(PPK2Cmd.SET_POWER_MODE, 1 if passthrough else 2)

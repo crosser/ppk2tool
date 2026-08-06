@@ -5,8 +5,6 @@
 from abc import ABC
 from enum import Enum
 from itertools import groupby
-from more_itertools import partition
-from struct import unpack
 from typing import (
     Callable,
     get_args,
@@ -19,6 +17,7 @@ from typing import (
     Sequence,
     Tuple,
 )
+from more_itertools import partition
 
 __all__ = "PPK2CTX", "PPK2Cmd", "PPK2Sample", "PPK2Meta", "PPK2Stats"
 
@@ -79,6 +78,7 @@ class PPK2Meta(NamedTuple):
 
     @classmethod
     def parse(cls, data: bytes) -> "PPK2Meta":
+        """Parse multiline response to the command GET_META_DATA"""
         # Attributes are printed as "key: value" pairs, one per line.
         # Keys that end with a numeric character refer to indexed calibration
         # values. Separate indexed and "normal" attributes:
@@ -91,7 +91,7 @@ class PPK2Meta(NamedTuple):
             ),
         )
         # print(tuple(at), tuple(ft))
-        attrs = {k: v for k, v in at}  # "normal" attributes
+        attrs = dict(at)  # "normal" attributes
         factors = (  # Group them by the value of the index, sorted
             {k[:-1]: v for k, v in d}  # Drop the last char from the key
             for _, d in groupby(
@@ -118,7 +118,7 @@ class PPK2Meta(NamedTuple):
         if extradata := set(attrs) - set(kwargs):
             print("Unknown meta attributes", extradata)
         if missingdata := set(kwargs) - set(attrs):
-            raise RuntimeError("Missing meta attributes {misingdata}")
+            raise RuntimeError(f"Missing meta attributes {missingdata}")
         return cls(**kwargs, cali=cali)
 
 
@@ -147,7 +147,7 @@ def inseq(x: int, y: int) -> bool:
     return ((x >> 2) + 1) % 0x40 == (y >> 2) % 0x40
 
 
-_adc_mult = 1.8 / 163840.0
+_ADC_MULT = 1.8 / 163840.0
 
 
 class _PPK2Sampler:
@@ -172,14 +172,16 @@ class _PPK2Sampler:
         )
         self.vdd = 3.7
 
-    def set_cali(self, cali: Tuple[PPK2Cali, ...]) -> None:
+    def set_cali(  # pylint:disable=missing-docstring
+        self, cali: Tuple[PPK2Cali, ...]
+    ) -> None:
         self.cali = cali
 
-    def set_vdd(self, vdd: float) -> None:
+    def set_vdd(self, vdd: float) -> None:  # pylint:disable=missing-docstring
         # Store VDD in Volts for calculating current mesaurement
         self.vdd = vdd
 
-    def parse_sample(
+    def parse_sample(  # pylint:disable=missing-docstring
         self, raw: memoryview
     ) -> Tuple[int, int, int, int, float]:
         radc = (raw[2] & 0x3F) << 8 | raw[3]
@@ -188,15 +190,14 @@ class _PPK2Sampler:
 
         # https://github.com/nordicsemi/pc-nrfconnect-ppk/\
         #     blob/main/src/device/serialDevice.ts#L137
-        if band > 4:
-            band = 4
+        band = min(band, 4)
         c = self.cali[band]
-        rwg = ((radc * 4.0) - c.O) * (_adc_mult / c.R)
+        rwg = ((radc * 4.0) - c.O) * (_ADC_MULT / c.R)
         amps = c.UG * (rwg * (c.GS * rwg + c.GI) + (c.S * self.vdd + c.I))
 
         return raw[0], raw[1] >> 2, band, radc, amps
 
-    def yield_samples(
+    def yield_samples(  # pylint:disable=missing-docstring
         self, data: bytearray | bytes
     ) -> Iterator[Tuple[int, int, int, int, float] | PPK2Stats]:
         for b in data:
@@ -331,14 +332,21 @@ class PPK2CTX:
         self.lastcmd: Optional[PPK2Cmd] = None
         self.waitmeta: bool = False
         self.sampler = _PPK2RawSampler() if raw else _PPK2SmoothSampler()
+        self.cb: Callable[
+            [PPK2Cmd, PPK2Meta | PPK2Sample | PPK2Stats], None
+        ] = lambda *_: (_ for _ in ()).throw(
+            RuntimeError("Callback is not set")
+        )
 
-    def cmd(self, cmd: PPK2Cmd, *args: int) -> bytes:
+    def cmd(  # pylint:disable=missing-docstring
+        self, cmd: PPK2Cmd, *args: int
+    ) -> bytes:
         self.lastcmd = cmd
         if cmd is PPK2Cmd.GET_META_DATA:
             self.waitmeta = True
         return bytes((*(cmd.value,), *args))
 
-    def setvdd(self, vdd: int) -> None:
+    def setvdd(self, vdd: int) -> None:  # pylint:disable=missing-docstring
         self.sampler.set_vdd(vdd)
 
     def setcallback(
