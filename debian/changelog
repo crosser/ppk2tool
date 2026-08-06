@@ -1,8 +1,10 @@
-ppk2tool (0.4) unstable; urgency=medium
+ppk2tool (0.9) unstable; urgency=medium
 
   * github action: use wildcard for release
+  * Update changelog for 0.4 release
+  * Add pylint unittest and address pylint findings
 
- -- Eugene Crosser <crosser@average.org>  Wed, 05 Aug 2026 19:58:48 +0200
+ -- Eugene Crosser <crosser@average.org>  Thu, 06 Aug 2026 19:34:39 +0200
 
 ppk2tool (0.4) unstable; urgency=medium
 
