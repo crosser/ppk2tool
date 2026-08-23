@@ -1,3 +1,9 @@
+ppk2tool (1.0) unstable; urgency=medium
+
+  * UNRELEASED
+
+ -- Eugene Crosser <crosser@average.org>  Sun, 23 Aug 2026 22:21:42 +0200
+
 ppk2tool (0.9) unstable; urgency=medium
 
   * github action: use wildcard for release
